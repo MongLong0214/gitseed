@@ -14,15 +14,15 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.11", "3.13"]
-    env:
-      HOME: ${{ runner.temp }}/gitseed-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Create empty home directory
-        run: mkdir -p "$HOME"
+      - name: Set isolated HOME
+        run: |
+          mkdir -p "${{ runner.temp }}/gitseed-home"
+          echo "HOME=${{ runner.temp }}/gitseed-home" >> "$GITHUB_ENV"
       - name: Install test runner
         run: python -m pip install "pytest>=8,<9"
       - name: Run isolated test suite
