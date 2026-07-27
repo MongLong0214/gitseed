@@ -24,7 +24,7 @@ jobs:
           tool_dir="$RUNNER_TEMP/commitlore"
           git clone https://github.com/MongLong0214/commitlore.git "$tool_dir"
           git -C "$tool_dir" checkout --detach 69ba58e1b8dc1f8f849e24e305cab2a004934e03
-          node "$tool_dir/missing/commitlore.mjs" validate --range \
+          node "$tool_dir/dist/commitlore.mjs" validate --range \
             "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
   test:
     runs-on: ubuntu-latest
