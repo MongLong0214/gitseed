@@ -1,0 +1,17 @@
+Warn: a live run with a query containing a space — which is every real GitHub
+  search — dies with an unhandled `http.client.InvalidURL`. The query is
+  interpolated into the URL unencoded. Found immediately after this work and filed
+  as the next task; the earlier live run passed only because its query had no
+  space in it
+Verified: 139 tests, up from 131; the fixture run still exits 0
+Unverified: the timeout and file-selection fixes end to end against real GitHub —
+  the crash above stops the run before grading is reached
+Evidence: gitseed/cli.py
+Evidence: tests/test_cli.py
+Follows: r-gs7d04
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs8e05
+Provenance: authored
+CommitLore-Version: 2.0.0
