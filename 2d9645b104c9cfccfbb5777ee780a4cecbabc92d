@@ -1,0 +1,17 @@
+Warn: the previous task reported "YAML validation passed" and that was true and
+  irrelevant. A YAML parser accepting a file says nothing about whether GitHub
+  accepts it as a workflow. This one reports honestly that it is NOT validated —
+  `actionlint` is unavailable and `api.github.com` is unreachable from the
+  delegated sandbox, so the first GitHub run is the only remaining proof
+Verified: 147 tests pass with `HOME` set to an empty directory; `pip --version`,
+  the fixture replay and `compileall` all succeed under it
+Unverified: that GitHub accepts this file. That is the whole defect being fixed
+  and it cannot be checked from here
+Evidence: .github/workflows/ci.yml
+Follows: r-gsb108
+Blast: module
+Undo: easy
+Certainty: tentative
+Record-Id: r-gsc209
+Provenance: authored
+CommitLore-Version: 2.0.0
