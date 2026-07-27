@@ -377,7 +377,7 @@ def main(
             model, reason = resolve_model(ollama_transport)
             err.write(f"grading model: {model} ({reason})\n")
             active_grader = OllamaGrader(model, ollama_transport)
-        active_writer = fixture if fixture is not None else writer or client
+        active_writer = writer or (fixture if fixture is not None else client)
         collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
         if fixture is not None and not fixture.complete:
             collected.complete = False

@@ -39,7 +39,7 @@ The replay prints the ranked clean fixture and withholds the malicious fixture a
 
 ## What it does not do yet
 
-- The review queue has not completed a full live cycle: final approval needs a real TTY. See [Backlog #5](https://github.com/MongLong0214/gitseed/issues/5).
+- The review queue's full offline fixture cycle runs under a real PTY; production still refuses piped approval.
 - The forbidden-resource 403 branch has only been exercised with injected responses, not a live API response. See [Backlog #6](https://github.com/MongLong0214/gitseed/issues/6).
 
 ## How the work is structured

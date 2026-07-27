@@ -6,5 +6,13 @@
     "model": "fixture",
     "temperature": 0.0,
     "prompt_version": "fixture-v1"
+  },
+  "fixture/second": {
+    "idea": 7,
+    "skill": 6,
+    "description": "second fixture utility",
+    "model": "fixture",
+    "temperature": 0.0,
+    "prompt_version": "fixture-v1"
   }
 }

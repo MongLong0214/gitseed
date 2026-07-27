@@ -420,8 +420,8 @@ def test_json_includes_every_candidate_and_its_withheld_reason(capsys) -> None:
     # Then: callers can distinguish a missing score from an omitted record.
     records = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert [record["repo"] for record in records] == ["fixture/clean", "fixture/malicious"]
-    assert records[1]["withheld"]
+    assert [record["repo"] for record in records] == ["fixture/clean", "fixture/second", "fixture/malicious"]
+    assert records[2]["withheld"]
 
 
 def test_bulk_approval_refuses_non_interactive_stdin(tmp_path, capsys) -> None:
