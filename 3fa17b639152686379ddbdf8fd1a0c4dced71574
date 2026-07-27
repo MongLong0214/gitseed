@@ -1,0 +1,21 @@
+Warn: a live dry run against real GitHub search — the first this project has made
+  — surfaced two defects this commit does not fix. Every candidate returned
+  "grading failed (timed out)": the timeout was set for a 7B model and 32B does
+  not finish inside it. And `fetch_files` asked GitHub for `images/n41Azff.png`
+  and took a 403, because it does not distinguish source from binary. Both are
+  filed as the next task rather than folded in here
+Verified: on this machine the run prints "grading model: qwen2.5-coder:32b
+  (largest installed preferred model)"
+Verified: 131 tests, up from 125; the fixture path still runs without contacting
+  Ollama at all
+Verified: with Ollama unreachable it fails closed, naming the three models it
+  looked for and the `ollama pull` that would fix it
+Evidence: gitseed/cli.py
+Evidence: tests/test_model_choice.py
+Follows: r-gs6c03
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs7d04
+Provenance: authored
+CommitLore-Version: 2.0.0
