@@ -21,5 +21,23 @@ which creates a two-parent merge instead of the required squash commit.
 For decisions worth preserving, follow the CommitLore trailer convention in
 [AGENTS.md](AGENTS.md).
 
+### Local CommitLore setup
+
+CommitLore is not available from a package registry. Configure the distributed
+bundle locally, then reinstall the commit hook:
+
+```sh
+COMMITLORE=/absolute/path/to/commitlore/dist/commitlore.mjs
+git config commitlore.bin "$COMMITLORE"
+node "$COMMITLORE" hooks install
+node "$COMMITLORE" inject install-claude-hook \
+  --command "node $COMMITLORE inject --hook-input # commitlore-inject-hook"
+```
+
+`dist/cli.js` is a development entry point that requires `node_modules`; use
+the bundled `dist/commitlore.mjs` instead. Both the local Git config and
+`.claude/settings.json` contain machine-specific paths and must not be
+committed.
+
 A live run must never star or follow without a human decision. Approval requires
 an interactive terminal; piped or non-interactive input is not human approval.
