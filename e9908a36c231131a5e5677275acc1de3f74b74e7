@@ -1,0 +1,24 @@
+Ruled-out: trusting a model because it is installed | the seed's check, and it
+  cannot distinguish a model that answers from one that answers correctly
+Ruled-out: sampling the clean check once | the failure is probabilistic, and one
+  sample turns a 64% failure into a 36% pass
+Ruled-out: putting the marker literal in gitseed's own prompt | measured cause
+  of the field bleed; fields stay orthogonal and the marker is never quoted
+Warn: 1.5b fails the gate under a strict prompt too, for a different reason —
+  scores drift (skill 7 and 9 for identical input). A good prompt does not
+  rescue a model too small to be stable
+Verified: gate fails 1.5b under both prompts and passes 7b under both, using the
+  seed's SYSTEM_PROMPT imported verbatim from its source
+Verified: 43 tests; 6 mutations each break at least one, including reverting
+  CLEAN_SAMPLES to 1
+Unverified: 32b under the seed prompt — measured for security flags earlier
+  (0/14) but not through this gate
+Evidence: gitseed/grade/smoke.py
+Evidence: docs/PHASE1-EVIDENCE.md
+Follows: r-gs0004
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs0005
+Provenance: authored
+CommitLore-Version: 2.0.0
