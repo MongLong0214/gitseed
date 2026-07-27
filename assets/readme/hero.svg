@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">gitseed: repository triage with a human approval gate</title>
+  <desc id="desc">Seeds move through deterministic screening and local-model grading to a human approval gate. No external write occurs without an Approval value.</desc>
+
+  <rect width="1200" height="360" rx="24" fill="#101612"/>
+  <g id="title-block" fill="#f2f5ed" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="64" y="178" font-size="80" font-weight="700" letter-spacing="-2">gitseed</text>
+    <text x="64" y="238" fill="#b9c6bd" font-size="52" font-weight="600" letter-spacing="-1">repository triage</text>
+  </g>
+
+  <g id="triage-flow" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <path d="M698 180H744M866 180H912M1034 180H1064" stroke="#8ed8a7" stroke-width="4" stroke-linecap="round"/>
+    <path d="M729 170l16 10-16 10M897 170l16 10-16 10M1049 170l16 10-16 10" fill="none" stroke="#8ed8a7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <g id="seed">
+      <circle cx="650" cy="180" r="47" fill="#1a2a20" stroke="#8ed8a7" stroke-width="3"/>
+      <path d="M650 203V161M650 176c-19-2-25-14-23-26 17 1 25 10 23 26M650 187c18-2 24-14 22-26-17 1-24 10-22 26" fill="none" stroke="#8ed8a7" stroke-width="3" stroke-linecap="round"/>
+    </g>
+
+    <g id="screen">
+      <rect x="744" y="133" width="122" height="94" rx="12" fill="#17211b" stroke="#5b7664" stroke-width="2"/>
+      <path d="M805 151l27 10v20c0 19-12 31-27 38-15-7-27-19-27-38v-20z" fill="none" stroke="#a8b8ad" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M793 182l8 8 17-20" fill="none" stroke="#8ed8a7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g id="grade">
+      <rect x="912" y="133" width="122" height="94" rx="12" fill="#17211b" stroke="#5b7664" stroke-width="2"/>
+      <path d="M942 192l15-25 14 16 17-30" fill="none" stroke="#8ed8a7" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g id="approval-gate">
+      <rect x="1064" y="133" width="72" height="94" rx="12" fill="#8ed8a7"/>
+      <path d="M1083 181l12 12 23-28" fill="none" stroke="#102217" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>
