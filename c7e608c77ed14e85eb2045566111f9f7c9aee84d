@@ -1,0 +1,26 @@
+Limit: `seed` reads as bootstrapping or scaffolding, which is what both of the
+  colliding org's repositories actually do. This tool triages. The README's
+  first sentence has to remove that reading immediately
+Ruled-out: keeping `gradelore` | one commit in is the cheapest possible moment
+  to change a name, which CommitLore demonstrated the expensive way
+Ruled-out: `repotriage` | my proposal, and the metaphor fits better — triage
+  means screening before acceptance, prioritising, and a human treating what
+  comes out. Naming is the owner's decision
+Ruled-out: `repotrust` | promises the one thing this tool refuses to assert
+Ruled-out: `touchstone` | best metaphor, PyPI taken (measured 200)
+Warn: ADR-0001 and ADR-0004 keep the old name on purpose — machine-replacing
+  them would erase what changed and why, the same rule CommitLore applies to
+  its own ADR-0008 and ADR-0009
+Verified: PyPI gitseed 404 and git-seed 404; GitHub org gitseed is an
+  Organization with 3 repos at 1-2 stars; npm gitseed is v0.0.0 from 2022
+Unverified: whether the `seed` reading actually confuses anyone — that is a
+  README problem and nobody has read the README yet
+Evidence: docs/adr/ADR-0004-name-gitseed.md
+Follows: r-gl0001
+Supersedes: r-gl0001
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs0002
+Provenance: authored
+CommitLore-Version: 2.0.0
