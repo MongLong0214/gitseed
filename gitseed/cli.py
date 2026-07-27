@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import sys
+import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Final, IO, Mapping, Protocol, Sequence
@@ -247,6 +248,7 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     command.add_argument("--approve-all", action="store_true")
     command.add_argument("--json", action="store_true")
+    command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
     return parser
 
@@ -308,57 +310,69 @@ def main(
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
 ) -> int:
-    args = _parser().parse_args(argv)
+    try:
+        args = _parser().parse_args(argv)
+    except SystemExit as error:
+        return 1 if error.code else 0
     if args.command != "run":
         return 1
-    if args.limit < 1:
-        _parser().error("--limit must be positive")
-    if args.grade_timeout < 1:
-        _parser().error("--grade-timeout must be positive")
-
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
-    source_in = sys.stdin if stdin is None else stdin
-    fixture = FixtureTransport(args.fixtures) if args.fixtures else None
-    active_transport = fixture if fixture is not None else transport or UrllibTransport(os.environ.get("GITHUB_TOKEN"))
-    client = None if fixture is not None else GitHubClient(active_transport)
-    active_fetch_files = fixture.fetch_files if fixture is not None else fetch_files or client.fetch_files
-    if fixture is not None:
-        active_grader = FixtureGrader(args.fixtures)
-    elif grader is not None:
-        active_grader = grader
-    else:
-        ollama_transport = UrllibTransport(timeout=args.grade_timeout)
-        model, reason = resolve_model(ollama_transport)
-        err.write(f"grading model: {model} ({reason})\n")
-        active_grader = OllamaGrader(model, ollama_transport)
-    active_writer = fixture if fixture is not None else writer or client
-    collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
-    if fixture is not None and not fixture.complete:
-        collected.complete = False
-        collected.stopped_because = str(fixture.stopped_because or "fixture reported an incomplete collection")
-    collected.candidates = collected.candidates[:args.limit]
-    result = run(collected, fetch_files=active_fetch_files, grader=active_grader)
-    entries = ranked(result)
-    if args.json:
-        json.dump(_records(entries), out)
-        out.write("\n")
-    else:
-        out.write(_table(entries) + "\n")
-    if not result.complete:
-        for reason in result.incomplete_because:
-            err.write(reason + "\n")
-        return 2
-    if args.dry_run:
-        return 0
-    try:
-        approvals = _approvals(entries, args.approve_all, source_in, out)
-    except NotInteractive as error:
-        err.write(f"approval refused: {error}\n")
+    if args.limit < 1:
+        err.write("invalid invocation: --limit must be positive\n")
         return 1
-    for approval in approvals:
-        perform(active_writer, approval)
-    block = render_block(approvals)
-    if block:
-        out.write(block)
-    return 0
+    if args.grade_timeout < 1:
+        err.write("invalid invocation: --grade-timeout must be positive\n")
+        return 1
+
+    try:
+        source_in = sys.stdin if stdin is None else stdin
+        fixture = FixtureTransport(args.fixtures) if args.fixtures else None
+        active_transport = fixture if fixture is not None else transport or UrllibTransport(os.environ.get("GITHUB_TOKEN"))
+        client = None if fixture is not None else GitHubClient(active_transport)
+        active_fetch_files = fixture.fetch_files if fixture is not None else fetch_files or client.fetch_files
+        if fixture is not None:
+            active_grader = FixtureGrader(args.fixtures)
+        elif grader is not None:
+            active_grader = grader
+        else:
+            ollama_transport = UrllibTransport(timeout=args.grade_timeout)
+            model, reason = resolve_model(ollama_transport)
+            err.write(f"grading model: {model} ({reason})\n")
+            active_grader = OllamaGrader(model, ollama_transport)
+        active_writer = fixture if fixture is not None else writer or client
+        collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
+        if fixture is not None and not fixture.complete:
+            collected.complete = False
+            collected.stopped_because = str(fixture.stopped_because or "fixture reported an incomplete collection")
+        collected.candidates = collected.candidates[:args.limit]
+        result = run(collected, fetch_files=active_fetch_files, grader=active_grader)
+        entries = ranked(result)
+        if args.json:
+            json.dump(_records(entries), out)
+            out.write("\n")
+        else:
+            out.write(_table(entries) + "\n")
+        if not result.complete:
+            for reason in result.incomplete_because:
+                err.write(reason + "\n")
+            return 2
+        if args.dry_run:
+            return 0
+        try:
+            approvals = _approvals(entries, args.approve_all, source_in, out)
+        except NotInteractive as error:
+            err.write(f"approval refused: {error}\n")
+            return 1
+        for approval in approvals:
+            perform(active_writer, approval)
+        block = render_block(approvals)
+        if block:
+            out.write(block)
+        return 0
+    except OSError as error:
+        err.write(f"run failed: {error}\n")
+        # Normal CLI output must stay actionable; debug mode preserves diagnostics.
+        if args.debug:
+            traceback.print_exc(file=err)
+        return 1

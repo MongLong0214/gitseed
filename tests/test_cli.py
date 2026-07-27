@@ -93,6 +93,48 @@ def test_an_incomplete_collection_exits_two_after_printing_the_ranking(tmp_path,
     assert "fixture rate limit" in captured.err
 
 
+class _UnavailableTransport:
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        raise OSError("network unavailable")
+
+
+def test_a_transport_error_is_a_one_line_failure_not_a_traceback() -> None:
+    # Given: the GitHub transport cannot connect.
+    errors = io.StringIO()
+    # When: the command runs without debug output.
+    exit_code = main(
+        ["run", "--query", "example"],
+        transport=_UnavailableTransport(),
+        grader=_Grader(),
+        stderr=errors,
+    )
+    # Then: users get one actionable line and a failure exit status.
+    assert exit_code == 1
+    assert errors.getvalue() == "run failed: network unavailable\n"
+
+
+def test_debug_mode_includes_the_transport_traceback() -> None:
+    # Given: the same transport failure with diagnostic output enabled.
+    errors = io.StringIO()
+    # When: the command runs in debug mode.
+    exit_code = main(
+        ["run", "--query", "example", "--debug"],
+        transport=_UnavailableTransport(),
+        grader=_Grader(),
+        stderr=errors,
+    )
+    # Then: the concise message retains the traceback for diagnosis.
+    assert exit_code == 1
+    assert "Traceback (most recent call last):" in errors.getvalue()
+    assert "OSError: network unavailable" in errors.getvalue()
+
+
+def test_an_invalid_invocation_exits_one() -> None:
+    errors = io.StringIO()
+    assert main(["run", "--query", "example", "--limit", "0"], stderr=errors) == 1
+    assert errors.getvalue() == "invalid invocation: --limit must be positive\n"
+
+
 class _NoWriteTransport:
     """A test double that fails if dry-run reaches an external action."""
 

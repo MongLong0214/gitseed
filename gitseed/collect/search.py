@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol, Sequence
+from urllib.parse import urlencode
 
 from .ratelimit import RateLimit, classify, parse
 
@@ -111,7 +112,9 @@ def collect(
     seen: set[str] = set()
 
     for page in range(1, pages + 1):
-        url = f"https://api.github.com/search/repositories?q={query}&per_page={per_page}&page={page}"
+        url = "https://api.github.com/search/repositories?" + urlencode(
+            {"q": query, "per_page": per_page, "page": page}
+        )
         status, headers, body = transport.get(url)
         kind = classify(status, headers)
 

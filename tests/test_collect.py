@@ -11,6 +11,7 @@ Every test here uses a fake transport. None of them touch the network.
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -142,6 +143,18 @@ class TestWaiting:
 
 
 class TestPaging:
+    def test_a_search_query_is_percent_encoded_and_round_trips(self) -> None:
+        # Given: GitHub syntax uses reserved characters alongside a separating space.
+        transport = FakeTransport([(200, OK, page([]))])
+        query = "language:python stars:>100+useful"
+        # When: collection builds its first request.
+        collect(query, transport=transport, per_page=3)
+        # Then: the wire URL is valid and decodes to the original GitHub query.
+        assert transport.urls == [
+            "https://api.github.com/search/repositories?q=language%3Apython+stars%3A%3E100%2Buseful&per_page=3&page=1"
+        ]
+        assert parse_qs(urlparse(transport.urls[0]).query)["q"] == [query]
+
     def test_a_short_page_ends_the_walk(self) -> None:
         transport = FakeTransport([(200, OK, page(["a/one"]))])
         result = collect("q", transport=transport, pages=5, per_page=30)
