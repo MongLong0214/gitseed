@@ -9,7 +9,7 @@ import os
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, IO, Protocol, Sequence
+from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
@@ -18,6 +18,14 @@ from .pipeline.run import Reviewed, ranked, run
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.trailers import render_block
+
+
+PREFERRED_OLLAMA_MODELS: Final = (
+    "qwen2.5-coder:32b",
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder:1.5b",
+)
+OLLAMA_TAGS_URL: Final = "http://localhost:11434/api/tags"
 
 
 class FetchFiles(Protocol):
@@ -30,6 +38,38 @@ class Grader(Protocol):
     def evaluate(self, digest: str) -> GradeResult: ...
 
     def flags_malicious(self, digest: str) -> bool: ...
+
+
+def resolve_model(transport: Transport, *, environ: Mapping[str, str] | None = None) -> tuple[str, str]:
+    environment = os.environ if environ is None else environ
+    explicit = environment.get("OLLAMA_MODEL")
+    if explicit is not None:
+        return explicit, "explicit OLLAMA_MODEL"
+    try:
+        status, _, body = transport.get(OLLAMA_TAGS_URL)
+    except OSError as error:
+        raise RuntimeError(
+            "could not reach Ollama to find a grading model; looked for "
+            f"{', '.join(PREFERRED_OLLAMA_MODELS)}; install one with ollama pull qwen2.5-coder:7b"
+        ) from error
+    if status != 200:
+        raise RuntimeError(
+            "could not read Ollama's installed models; looked for "
+            f"{', '.join(PREFERRED_OLLAMA_MODELS)}; install one with ollama pull qwen2.5-coder:7b"
+        )
+    payload = json.loads(body)
+    installed = {
+        str(model["name"])
+        for model in payload.get("models", [])
+        if isinstance(model, dict) and isinstance(model.get("name"), str)
+    }
+    for model in PREFERRED_OLLAMA_MODELS:
+        if model in installed:
+            return model, "largest installed preferred model"
+    raise RuntimeError(
+        "Ollama has none of the supported grading models; looked for "
+        f"{', '.join(PREFERRED_OLLAMA_MODELS)}; install one with ollama pull qwen2.5-coder:7b"
+    )
 
 
 class FixtureTransport:
@@ -245,7 +285,15 @@ def main(
     active_transport = fixture if fixture is not None else transport or UrllibTransport(os.environ.get("GITHUB_TOKEN"))
     client = None if fixture is not None else GitHubClient(active_transport)
     active_fetch_files = fixture.fetch_files if fixture is not None else fetch_files or client.fetch_files
-    active_grader = FixtureGrader(args.fixtures) if fixture is not None else grader or OllamaGrader(os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b"))
+    if fixture is not None:
+        active_grader = FixtureGrader(args.fixtures)
+    elif grader is not None:
+        active_grader = grader
+    else:
+        ollama_transport = UrllibTransport()
+        model, reason = resolve_model(ollama_transport)
+        err.write(f"grading model: {model} ({reason})\n")
+        active_grader = OllamaGrader(model, ollama_transport)
     active_writer = fixture if fixture is not None else writer or client
     collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
     if fixture is not None and not fixture.complete:

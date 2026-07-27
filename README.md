@@ -20,11 +20,14 @@ Use `--json` when another program needs the result:
 python3 -m gitseed run --query x --fixtures tests/fixtures --json
 ```
 
-For a live run, set `GITHUB_TOKEN` for GitHub API access and `OLLAMA_MODEL` for
-the local Ollama model (the default model is `qwen2.5-coder:7b`):
+For a live run, set `GITHUB_TOKEN` for GitHub API access. `OLLAMA_MODEL` is an
+explicit model choice; otherwise gitseed asks Ollama which models are installed
+and chooses the first available in this order: `qwen2.5-coder:32b`,
+`qwen2.5-coder:7b`, then `qwen2.5-coder:1.5b`. If none is installed, it stops
+and tells you how to pull one:
 
 ```sh
-GITHUB_TOKEN=... OLLAMA_MODEL=... python3 -m gitseed run --query 'language:python topic:cli'
+GITHUB_TOKEN=... python3 -m gitseed run --query 'language:python topic:cli'
 ```
 
 An incomplete collection or pipeline exits 2 after still printing its ranking;
