@@ -1,0 +1,19 @@
+Ruled-out: adding coverage gates or a badge | one workflow that tells the truth is
+  worth more than five nobody reads
+Warn: the spec for this task said gitseed had no CI. It had one since 6072c2a.
+  Written without checking, which is the same failure mode as the five "CI is
+  green" claims made against a red CI today
+Verified: 147 tests pass with `HOME` pointed at an empty directory, so no test
+  depends on this machine's git identity — the dependency that broke the sibling
+  project is absent here
+Unverified: the workflow itself has not run. GitHub has not executed it at the
+  time of this commit, and no claim is made about it being green
+Evidence: .github/workflows/ci.yml
+Evidence: tests/conftest.py
+Follows: r-gsa007
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gsb108
+Provenance: authored
+CommitLore-Version: 2.0.0
