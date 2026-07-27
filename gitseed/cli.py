@@ -166,10 +166,12 @@ class FixtureGrader:
 
     def evaluate(self, digest: str) -> GradeResult:
         repo = digest.splitlines()[0].removeprefix("repository: ")
+        if not repo:
+            return GradeResult(7, 6, "fixture smoke response", "fixture", 0.0, "fixture-v1")
         return GradeResult(**self.grades[repo])
 
     def flags_malicious(self, digest: str) -> bool:
-        return False
+        return "base64.b64decode" in digest
 
 
 class GitHubClient:
@@ -319,6 +321,17 @@ class OllamaGrader:
         return json.loads(json.loads(response)["response"])
 
 
+class UnavailableGrader:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def evaluate(self, digest: str) -> GradeResult:
+        raise RuntimeError(self.reason)
+
+    def flags_malicious(self, digest: str) -> bool:
+        raise RuntimeError(self.reason)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gitseed", epilog=EXIT_CODES)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -392,6 +405,7 @@ def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
             "recommendation": "review" if recommendations[entry.candidate.repo].recommended else "not recommended",
             "severity": entry.severity,
             "withheld": entry.withheld,
+            "model_coverage": artifact.result.grading_basis.value,
         }
         for index, entry in enumerate(entries, start=1)
     ]
@@ -404,6 +418,9 @@ def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
         out.write("\n")
         return
     out.write(SCORE_LIMIT + "\n")
+    coverage = artifact.result.grading_basis.value
+    suffix = " (deterministic-only)" if coverage == "absent" else ""
+    out.write(f"model coverage: {coverage}{suffix}\n")
     out.write(_table_rows(records) + "\n")
 
 
@@ -440,6 +457,9 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     out.write(f"unavailable features: {unavailable or 'none'}\n")
     screened = ", ".join(reviewed.screened_files) or "0 files"
     out.write(f"security coverage: {reviewed.screening_basis.value} ({screened})\n")
+    coverage = artifact.result.grading_basis.value
+    suffix = " (deterministic-only)" if coverage == "absent" else ""
+    out.write(f"model coverage: {coverage}{suffix}\n")
     findings = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.findings)
     unverified = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.unverified)
     out.write(f"security findings: {findings or 'none'}\n")
@@ -554,9 +574,13 @@ def main(
             active_grader = grader
         else:
             ollama_transport = UrllibTransport(timeout=args.grade_timeout)
-            model, reason = resolve_model(ollama_transport)
-            err.write(f"grading model: {model} ({reason})\n")
-            active_grader = OllamaGrader(model, ollama_transport)
+            try:
+                model, reason = resolve_model(ollama_transport)
+            except RuntimeError as error:
+                active_grader = UnavailableGrader(str(error))
+            else:
+                err.write(f"grading model: {model} ({reason})\n")
+                active_grader = OllamaGrader(model, ollama_transport)
         repository = fixture if fixture is not None else GitHubRepository(active_transport)
         collected = repository.search(args.query, args.limit)
         recorded = execute(
