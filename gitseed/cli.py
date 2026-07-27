@@ -14,13 +14,17 @@ from pathlib import Path
 from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
+from .adapters import CallableFileReader, GitHubRepository, SystemClock
+from .application import execute, replay
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
 from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
+from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.trailers import render_block
+from .scoring import ScoreInputs
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -111,6 +115,32 @@ class FixtureTransport:
     def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         root = self.directory / self._files[candidate.repo]
         return FetchedFiles(tuple((str(path.relative_to(root)), path.read_text()) for path in sorted(root.rglob("*")) if path.is_file()))
+
+    def search(self, query: str, limit: int) -> CollectResult:
+        result = collect(
+            query,
+            transport=self,
+            pages=(limit + 99) // 100,
+            per_page=min(limit, 100),
+        )
+        result.complete = self.complete
+        result.stopped_because = self.stopped_because
+        result.candidates = result.candidates[:limit]
+        return result
+
+    def metadata(
+        self,
+        candidate: Candidate,
+        at: datetime,
+    ) -> RepositoryMetadata:
+        item = next(item for item in self.items if item["full_name"] == candidate.repo)
+        return RepositoryMetadata(
+            ScoreInputs(
+                item.get("commit_cadence_30d"),
+                item.get("contributor_count"),
+                item.get("has_license"),
+            )
+        )
 
     def star(self, repo: str) -> None:
         self.calls.append(("star", repo))
@@ -287,6 +317,10 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--json", action="store_true")
     command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
+    command.add_argument("--artifact", type=Path, help="write a replayable record of this run")
+    replay_command = commands.add_parser("replay")
+    replay_command.add_argument("artifact", type=Path)
+    replay_command.add_argument("--json", action="store_true")
     return parser
 
 
@@ -351,10 +385,27 @@ def main(
         args = _parser().parse_args(argv)
     except SystemExit as error:
         return 1 if error.code else 0
-    if args.command != "run":
-        return 1
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    if args.command == "replay":
+        try:
+            artifact = replay(args.artifact.read_bytes())
+        except (OSError, ValueError) as error:
+            err.write(f"replay failed: {error}\n")
+            return 1
+        entries = ranked(artifact.result)
+        if args.json:
+            json.dump(_records(entries), out)
+            out.write("\n")
+        else:
+            out.write(_table(entries) + "\n")
+        if artifact.result.complete:
+            return 0
+        for reason in artifact.result.incomplete_because:
+            err.write(reason + "\n")
+        return 2
+    if args.command != "run":
+        return 1
     if args.limit < 1:
         err.write("invalid invocation: --limit must be positive\n")
         return 1
@@ -378,12 +429,25 @@ def main(
             err.write(f"grading model: {model} ({reason})\n")
             active_grader = OllamaGrader(model, ollama_transport)
         active_writer = writer or (fixture if fixture is not None else client)
-        collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
-        if fixture is not None and not fixture.complete:
-            collected.complete = False
-            collected.stopped_because = str(fixture.stopped_because or "fixture reported an incomplete collection")
-        collected.candidates = collected.candidates[:args.limit]
-        result = run(collected, fetch_files=active_fetch_files, grader=active_grader)
+        if args.artifact is None:
+            collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
+            if fixture is not None and not fixture.complete:
+                collected.complete = False
+                collected.stopped_because = str(fixture.stopped_because or "fixture reported an incomplete collection")
+            collected.candidates = collected.candidates[:args.limit]
+            result = run(collected, fetch_files=active_fetch_files, grader=active_grader)
+        else:
+            recorded = execute(
+                RunRequest(args.query, args.limit),
+                RunPorts(
+                    fixture if fixture is not None else GitHubRepository(active_transport),
+                    CallableFileReader(active_fetch_files),
+                    active_grader,
+                    SystemClock(),
+                ),
+            )
+            args.artifact.write_bytes(recorded.to_bytes())
+            result = recorded.result
         entries = ranked(result)
         if args.json:
             json.dump(_records(entries), out)

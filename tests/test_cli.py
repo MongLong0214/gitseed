@@ -81,6 +81,32 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "withheld" in captured.out
 
 
+def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) -> None:
+    # Given: a fixture-backed run records one canonical artifact.
+    artifact = tmp_path / "run.json"
+    live_code = main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--artifact",
+            str(artifact),
+        ]
+    )
+    live = capsys.readouterr()
+
+    # When: the CLI replays only that artifact.
+    replay_code = main(["replay", str(artifact)])
+    replayed = capsys.readouterr()
+
+    # Then: replay performs no live I/O and renders the same result.
+    assert live_code == replay_code == 0
+    assert replayed.out == live.out
+    assert replayed.err == live.err == ""
+
+
 def test_an_incomplete_collection_exits_two_after_printing_the_ranking(tmp_path, capsys) -> None:
     # Given: collection retained candidates before reporting its limit.
     _write_fixture(tmp_path, complete=False)
