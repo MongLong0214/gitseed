@@ -7,7 +7,7 @@
 | F3 · grade | [F3-grade.md](F3-grade.md) | F2 |
 | F4 · review | [F4-review.md](F4-review.md) | F3 |
 
-## Critical path (크리티컬 패스)
+## Critical path
 
 F1 is the keystone: **F1 collect → F2 screen → F3 grade → F4 review**.
 
