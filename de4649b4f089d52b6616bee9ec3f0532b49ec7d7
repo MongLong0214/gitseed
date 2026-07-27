@@ -1,0 +1,19 @@
+Warn: a live run now reaches file fetching and takes HTTP 403 on every candidate,
+  because this machine's unauthenticated GitHub quota is exhausted (0 of 60). The
+  tool behaves correctly — it reports each failure, withholds those candidates
+  with a reason, and exits 2 — but the message says only "GitHub returned HTTP
+  403". Rate-limited and forbidden are different facts and a user can act on only
+  one of them. `collect/ratelimit.py` already separates them; the file-fetch path
+  does not use it. Filed, not fixed here
+Verified: the spaced query that crashed now runs to completion and the ranking
+  prints; exit 2 on the incomplete run
+Verified: 143 tests, up from 139
+Evidence: gitseed/collect/search.py
+Evidence: gitseed/cli.py
+Follows: r-gs8e05
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs9f06
+Provenance: authored
+CommitLore-Version: 2.0.0
