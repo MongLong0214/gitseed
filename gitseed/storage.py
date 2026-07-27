@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from types import TracebackType
 
+from .application import replay as replay_artifact
 from .artifact import RunArtifact
 from .storage_schema import migrate
 
@@ -48,3 +49,6 @@ class SQLiteRunStore:
         if row is None:
             raise KeyError(run_id)
         return RunArtifact.from_bytes(bytes(row[0]))
+
+    def replay(self, run_id: str) -> RunArtifact:
+        return replay_artifact(self.load(run_id).to_bytes())

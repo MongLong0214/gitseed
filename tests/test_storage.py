@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import fields
 from datetime import datetime, timezone
 
 import pytest
 
-from gitseed.application import execute
+from gitseed.application import execute, replay
 from gitseed.artifact import RunArtifact
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.grade.types import GradeResult
@@ -93,14 +94,17 @@ def test_nonempty_older_schema_is_refused() -> None:
 def test_stored_artifact_round_trips_with_score_provenance(tmp_path) -> None:
     # Given: execution produced a complete artifact with a versioned, covered score.
     recorded = artifact()
+    direct_replay = replay(recorded.to_bytes())
     with SQLiteRunStore(tmp_path / "runs.db") as store:
         store.save("run-1", recorded)
 
-        # When: the record is loaded from SQLite.
+        # When: the record is loaded and replayed from SQLite.
         loaded = store.load("run-1")
+        replayed = store.replay("run-1")
 
     # Then: canonical bytes and the score's version and coverage survive.
     assert loaded.to_bytes() == recorded.to_bytes()
+    assert replayed.to_bytes() == direct_replay.to_bytes() == recorded.to_bytes()
     assert loaded.scores[0].score.version == recorded.scores[0].score.version
     assert loaded.scores[0].score.coverage == frozenset(ALL_FEATURES)
 
@@ -122,3 +126,29 @@ def test_partial_artifact_and_correction_history_are_preserved(tmp_path) -> None
     # Then: partial status remains visible and the original was never replaced.
     assert loaded.result.complete is False
     assert loaded.to_bytes() == partial.to_bytes()
+
+
+def test_replaying_a_stored_artifact_recomputes_recorded_port_responses(tmp_path) -> None:
+    # Given: storage holds an artifact whose derived score was corrupted before saving.
+    recorded = artifact()
+    corrupted = RunArtifact.from_bytes(
+        recorded.to_bytes().replace(b'"value":"0.119096"', b'"value":"999"')
+    )
+    with SQLiteRunStore(tmp_path / "runs.db") as store:
+        store.save("run-1", corrupted)
+
+        # When: the stored run is replayed offline.
+        replayed = store.replay("run-1")
+
+    # Then: replay restores output by executing the recorded port responses.
+    assert replayed.to_bytes() == recorded.to_bytes()
+
+
+def test_stored_replay_has_no_external_writer_port() -> None:
+    # Given/When/Then: storage replay uses the existing read-only application seam.
+    assert [field.name for field in fields(RunPorts)] == [
+        "repository",
+        "files",
+        "model",
+        "clock",
+    ]
