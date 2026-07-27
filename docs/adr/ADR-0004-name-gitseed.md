@@ -1,64 +1,63 @@
-# ADR-0004: 이름 — `gitseed` (오너 결정)
+# ADR-0004: name — `gitseed` (owner decision)
 
 - Status: Accepted (2026-07-27)
-- Supersedes: ADR-0001의 **이름** 조항(`gradelore`). ADR-0001의 동작 결정(자동 소셜
-  액션 제거)과 기각 목록은 **그대로 유효하다.**
+- Supersedes: ADR-0001's **name** clause (`gradelore`). ADR-0001's behavior decision (remove automated
+  social actions) and rejection list **remain valid.**
 
 ## Context
 
-ADR-0001은 `gradelore`를 골랐다. 그 근거 셋 중 둘이 틀렸다.
+ADR-0001 chose `gradelore`. Two of its three reasons were wrong.
 
-**"오너의 `CommitLore`와 같은 패턴이라 제품군을 이룬다"** — 브랜딩 편의 논거이지
-제품 진실 논거가 아니다. `CommitLore`의 `lore`는 지시대상이 분명하다(커밋에 붙은
-축적된 결정 지식 = 제품 자체). `gradelore`의 `lore`가 가리키는 것은 점수인데,
-**8/10은 전승되는 지식이 아니라 숫자다.** 은유가 이전되지 않는데 형태만 빌렸다.
+**"It forms a product family by following the same pattern as the owner's `CommitLore`"** — an argument
+from branding convenience, not product truth. The referent of `lore` in `CommitLore` is clear
+(accumulated decision knowledge attached to commits = the product itself). In `gradelore`, `lore` refers to a score,
+but **8/10 is a number, not knowledge passed down.** It borrowed the form without transferring the metaphor.
 
-**"하는 일(grade)을 직접 말한다"** — 방향 전환 뒤에는 절반만 맞다. 파이프라인은
-수집 → 결정적 보안 스크린 → **계약 검증된** LLM 채점 → 사람이 처리하는 리뷰 큐다.
-채점은 가운데 한 단계이며, 심지어 **가장 덜 신뢰해서 스모크 테스트 뒤에 두는**
-단계다.
+**"It directly states what it does (grade)"** — only half true after the pivot. The pipeline is
+collection → deterministic security screen → **contract-verified** LLM grading → human-operated review queue.
+Grading is one middle stage and even the stage **trusted least and therefore placed behind a smoke test**.
 
-내가 대안으로 `repotriage`를 제안했으나(triage = 수용 전 선별 + 우선순위 + 사람의
-처치가 뒤따름), **오너가 `gitseed`로 결정했다.** 이름은 오너 결정 사항이다.
+I proposed `repotriage` as an alternative (triage = screening before acceptance + prioritization + subsequent
+human treatment), but **the owner decided on `gitseed`.** The name is the owner's decision.
 
 ## Decision
 
 **`gitseed`.**
 
-## 가용성 실측 (ADR-0009/CommitLore 절차 준용)
+## Measured availability (following the ADR-0009/CommitLore procedure)
 
-| 네임스페이스 | 결과 | 판정 |
+| Namespace | Result | Decision |
 |---|---|---|
-| **PyPI `gitseed`** | **404 — 자유** | 우리가 배포할 레지스트리. 문제 없음 |
-| PyPI `git-seed` | 404 — 자유 | 예비 |
-| GitHub org `gitseed` | **점유** — Organization, 2015 생성, 3 repos | 아래 |
-| npm `gitseed` | **점유** — v0.0.0, 2022 이후 방치된 스텁 | 우리 레지스트리가 아님 |
+| **PyPI `gitseed`** | **404 — available** | The registry we will distribute through. No problem |
+| PyPI `git-seed` | 404 — available | Reserve |
+| GitHub org `gitseed` | **Taken** — Organization, created 2015, 3 repos | Below |
+| npm `gitseed` | **Taken** — v0.0.0, abandoned stub since 2022 | Not our registry |
 
-GitHub org 내용: `gitseed`(Rust CI 시스템, ★1, 2025-09 푸시), `gitseed_old`(GCP
-bastion 부트스트랩 셸 스크립트, 2018), `seedpq`(★2, 2026-01).
+GitHub org contents: `gitseed` (Rust CI system, ★1, pushed 2025-09), `gitseed_old` (GCP
+bastion bootstrap shell script, 2018), `seedpq` (★2, 2026-01).
 
-**`CommitLore`가 `gitlore`를 기각한 것과는 다른 유형이다.** 그때는 우리가 배포할
-레지스트리(npm)에 있는 **활성 동종 도구**였다. 여기는 배포 레지스트리(PyPI)가 비어
-있고, 충돌 대상은 CI 시스템이라 도메인이 다르며, ★1~2라 혼동될 브랜드가 아니다.
-저장소는 `MongLong0214/gitseed`에 두므로 org 네임스페이스도 필요 없다.
+**This differs from `CommitLore`'s rejection of `gitlore`.** That was an **active tool in the same domain**
+in the registry we would distribute through (npm). Here the distribution registry (PyPI) is empty,
+the conflicting item is a CI system in a different domain, and ★1~2 is not a brand likely to be confused.
+The repository will live at `MongLong0214/gitseed`, so the org namespace is unnecessary.
 
-## 알려진 위험 — 기록해 둔다
+## Known risk — record it
 
-**`seed`는 부트스트랩·스캐폴딩으로 읽히기 쉽다.** 실제로 위 org의 두 저장소가 그
-일을 한다(CI 시스템, bastion 부트스트랩). 이 도구는 선별기이므로 어감이 어긋날 수
-있다. README 첫 문장이 그 오해를 즉시 걷어내야 한다.
+**`seed` easily reads as bootstrapping or scaffolding.** Two repositories in the org above actually
+do that work (CI system, bastion bootstrap). This tool triages, so the connotation may mislead.
+The README's first sentence must remove that misunderstanding immediately.
 
 ## Ruled-out
 
-- **`gradelore` 유지** | 위 Context. 커밋 1개 시점이 가장 싼 교체 시점이다
-- **`repotriage`** | 내 제안이었고 은유는 더 정확하나, 이름은 오너 결정이다
-- **`repotrust`** | 우리가 명시적으로 거부하는 것(신뢰 단언)을 약속한다
-- **`repograder`** | 파이프라인에서 가장 덜 신뢰하는 단계를 이름으로 삼는다
-- **`touchstone`** | 은유가 가장 정확하나 PyPI 선점(200)
+- **Keep `gradelore`** | Context above. At 1 commit, this is the cheapest point to replace it
+- **`repotriage`** | my proposal, and the metaphor is more accurate, but the name is the owner's decision
+- **`repotrust`** | promises exactly what we explicitly refuse to assert (trust)
+- **`repograder`** | names the pipeline after its least-trusted stage
+- **`touchstone`** | the most accurate metaphor, but taken on PyPI (200)
 
 ## Consequences
 
-- 디렉터리·문서 표기를 `gitseed`로 교체한다
-- **ADR-0001과 이 문서의 옛 표기는 기계 치환에서 제외한다.** 결정 이력이며 치환하면
-  무엇이 왜 바뀌었는지가 사라진다(CommitLore ADR-0008/0009와 같은 규칙)
-- 창세 커밋 `f2e8535`의 메시지는 히스토리이므로 고치지 않는다
+- Replace directory and document references with `gitseed`
+- **Exclude old references in ADR-0001 and this document from mechanical replacement.** They are decision history;
+  replacement would erase what changed and why (the same rule as CommitLore ADR-0008/0009)
+- Do not edit the message of genesis commit `f2e8535`; it is history

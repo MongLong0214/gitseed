@@ -40,7 +40,7 @@ The replay prints the ranked clean fixture and withholds the malicious fixture a
 ## What it does not do yet
 
 - The review queue's full offline fixture cycle runs under a real PTY; production still refuses piped approval.
-- The forbidden-resource 403 branch has only been exercised with injected responses, not a live API response. See the [required live evidence](docs/tickets/F1-collect.md#남은-실측--issue-6) and [Backlog #6](https://github.com/MongLong0214/gitseed/issues/6).
+- The forbidden-resource 403 branch has only been exercised with injected responses, not a live API response. See the [required live evidence](docs/tickets/F1-collect.md#remaining-live-evidence-issue-6) and [Backlog #6](https://github.com/MongLong0214/gitseed/issues/6).
 
 ## How the work is structured
 

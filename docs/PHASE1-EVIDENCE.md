@@ -1,252 +1,255 @@
-# Phase 1 — 증거 수집 (재현 실험 위주)
+# Phase 1 — Evidence collection (reproduction experiments first)
 
-불변식 1: 증거 없는 주장 금지. 결함은 재현하고 수치는 실행 로그에서만 가져온다.
-아래는 전부 이 기계에서 실행한 결과다.
+Invariant 1: no claims without evidence. Reproduce defects and take numbers only from run logs.
+Everything below is the result of execution on this machine.
 
-환경: Apple M4 Pro / 48GB 통합 메모리 / 16 GPU 코어 / ollama 0.17.4
+Environment: Apple M4 Pro / 48GB unified memory / 16 GPU cores / ollama 0.17.4
 
 ---
 
-## D-1. 씨앗 정적 사실 (clone 후 직접 확인)
+## D-1. Static facts about the seed (confirmed directly after clone)
 
-| 항목 | 실측 | 비고 |
+| Item | Measured | Notes |
 |---|---|---|
-| 규모 | 12 파일 / 993 줄 Python | |
-| 테스트 | **0개** | `find` 결과 0 |
-| CI | **0개** | `.github/workflows` 없음 |
-| 라이선스 | **없음** | `gh repo view` licenseInfo null |
-| 스타 | 60 | 2026-07-26 기준 |
-| 레이트리밋 처리 | **0건** | `rate·429·403·X-RateLimit·retry·backoff` 전부 미검출 |
-| 마이그레이션 | 멱등 컬럼 추가 **있음** | `user_version` 추적·순서·타입변경·백필 없음 |
-| dry-run | **있음** | `DRY_RUN` env + `--dry-run` 인자 |
-| 되돌림 | 조회만 있음 | `unfollowed_above`/`unstarred_above`. unfollow/unstar **명령은 없음** |
+| Size | 12 files / 993 lines of Python | |
+| Tests | **0** | `find` result 0 |
+| CI | **0** | No `.github/workflows` |
+| License | **None** | `gh repo view` licenseInfo null |
+| Stars | 60 | As of 2026-07-26 |
+| Rate-limit handling | **0 cases** | `rate·429·403·X-RateLimit·retry·backoff` all absent |
+| Migrations | Idempotent column additions **exist** | No `user_version` tracking, ordering, type changes, or backfill |
+| dry-run | **Exists** | `DRY_RUN` env + `--dry-run` argument |
+| Reversal | Queries only | `unfollowed_above`/`unstarred_above`. **No commands** for unfollow/unstar |
 
-> 이 표의 "마이그레이션 없음"과 "dry-run 없음"은 내가 clone 전에 **추정으로 썼다가
-> 둘 다 틀린** 항목이다. 불변식 1 위반 2회. 결정 이력이라 지우지 않는다.
+> I wrote "no migrations" and "no dry-run" in this table as **assumptions before cloning,
+> and both were wrong**. 2 violations of invariant 1. Do not delete them; they are decision history.
 
-## D-2. 채점 결정성 — 측정함
+## D-2. Grading determinism — measured
 
-씨앗의 `libs/ollama.evaluate`를 **동일 digest**로 반복 호출. `temperature: 0.1`,
-`format: json`, `seed` 파라미터 없음.
+Repeatedly call the seed's `libs/ollama.evaluate` with the **same digest**. `temperature: 0.1`,
+`format: json`, no `seed` parameter.
 
-**씨앗 기본값 qwen2.5-coder:7b, n=10:**
+**Seed default qwen2.5-coder:7b, n=10:**
 
 ```
 idea   distinct=[5.0]  range=0.0  sd=0.000
 skill  distinct=[9.0]  range=0.0  sd=0.000
-description  10회 중 3개 서로 다름
+description   3 of 10 runs differ
 ```
 
-**1.5b, n=22 (참고):** 동일하게 `idea·skill` sd=0.000, description만 흔들림.
+**1.5b, n=22 (reference):** likewise, `idea·skill` sd=0.000; only description varies.
 
-**결론: 점수는 두 모델 모두 완전히 안정적이었다.** "같은 레포가 다른 점수를
-받는다"는 내 최초 주장은 **재현되지 않았다.** `temperature: 0.1` + `format: json`이
-숫자 필드를 사실상 고정한다. 흔들리는 것은 자유서술 `description` 필드뿐이다.
+**Conclusion: scores were completely stable in both models.** My initial claim that "the same
+repository receives different scores" **did not reproduce.** `temperature: 0.1` + `format: json`
+effectively fixes the numeric fields. Only the free-text `description` field varies.
 
-이건 재구축 방향을 바꾼다: **결정성은 씨앗의 문제가 아니었다.** 오리지널리티 2번을
-"채점을 결정적으로 만든다"에서 **"흔들리는 산문 필드를 채점 경로에서 분리한다"**로
-좁힌다 — 숫자는 이미 안정적이고, 문제는 산문이 채점에 섞이는 구조다(D-3 참고).
+This changes the rebuild direction: **determinism was not a seed problem.** Narrow originality item 2
+from "make grading deterministic" to **"separate the varying prose field from the grading path"**
+— the numbers are already stable; the problem is a structure that mixes prose into grading (see D-3).
 
-## D-3. 보안 판정 — **철회.** 씨앗 결함이 아니라 모델 크기 문제였다
+## D-3. Security classification — **withdrawn.** It was a model-size problem, not a seed defect
 
-**씨앗 기본값 `qwen2.5-coder:7b`, 동일 digest, n=14:**
+**Seed default `qwen2.5-coder:7b`, same digest, n=14:**
 
 ```
 security_flag=true                0/14
-description 이 ⚠ 로 시작           0/14
-불일치                            0/14
+description starts with ⚠           0/14
+mismatch                            0/14
 ```
 
-**판정 필드(`security_flag`)는 7b에서 완벽하다.** 아래 1.5b의 64%는 씨앗에 대한
-판정으로 쓸 수 없고, 쓰지 않는다. 그대로 발표했다면 씨앗 저자에게 없는 결함을
-씌우는 것이었다.
+**The classification field (`security_flag`) is perfect with 7b.** The 64% from 1.5b below cannot
+be used to judge the seed, and it will not be. Publishing it unchanged would have attributed a
+nonexistent defect to the seed's author.
 
-**단, 산문 필드 누수는 7b에서도 드물게 재현된다.** D-2 결정성 측정(7b, n=10)에서
-1회, `description`이 `⚠ SECURITY: The code does not contain any malicious...` 로
-시작했다 — 깨끗하다고 말하면서 보안 접두어를 붙였다. `security_flag` 자체는
-오염되지 않았으므로 **채점 결정에는 영향이 없지만**, 사용자에게 보이는 설명은
-오도한다. 이것이 D-2의 새 결론("산문 필드를 채점 경로에서 분리")과 정확히 맞물린다:
-숫자는 안정적이고, 문제는 자유서술 필드가 표시 계층으로 새는 것이다.
+**But prose-field leakage rarely reproduces even with 7b.** In the D-2 determinism measurement
+(7b, n=10), `description` began with `⚠ SECURITY: The code does not contain any malicious...`
+1 time — it added a security prefix while saying the code was clean. Because `security_flag` itself
+was not contaminated, this **does not affect grading decisions**, but the user-visible explanation
+misleads. This aligns exactly with D-2's new conclusion ("separate prose fields from the grading path"):
+the numbers are stable; the problem is free text leaking into the display layer.
 
-### 그런데 철회하고 나니 더 중요한 것이 남는다
+### After the withdrawal, something more important remains
 
-| 모델 | 크기 | 깨끗한 코드에 대한 오탐 |
+| Model | Size | False positives on clean code |
 |---|---|---|
-| qwen2.5-coder:1.5b | 1.0 GB | **9/14 (64%)** + 필드 뒤바뀜 |
-| qwen2.5-coder:7b (씨앗 기본값) | 4.7 GB | **0/14** |
-| qwen2.5-coder:32b | 19.9 GB | 측정 예정 |
+| qwen2.5-coder:1.5b | 1.0 GB | **9/14 (64%)** + swapped fields |
+| qwen2.5-coder:7b (seed default) | 4.7 GB | **0/14** |
+| qwen2.5-coder:32b | 19.9 GB | Measurement planned |
 
-씨앗은 모델이 **설치돼 있는지만** 확인한다(`libs/ollama.py:47` — 미설치면 에러).
-**출력 계약을 지킬 능력이 있는지는 확인하지 않는다.**
+The seed checks **only whether the model is installed** (`libs/ollama.py:47` — error if absent).
+**It does not check whether the model can follow the output contract.**
 
-작은 기계에서 `OLLAMA_MODEL=qwen2.5-coder:1.5b`를 쓰는 것은 합리적인 선택이다.
-그렇게 하면 사용자는 **깨끗한 레포의 3분의 2를 악성으로 판정하는** 도구를
-아무 경고 없이 손에 쥔다. 게다가 그 판정은 `security_reason`에 "코드가 단순하고 잘
-구조화됨"이라고 적힌 채 나온다.
+Using `OLLAMA_MODEL=qwen2.5-coder:1.5b` on a small machine is a reasonable choice.
+It gives the user a tool that, **of 3 equal parts of clean repositories, classifies 2 as malicious,**
+without warning. Worse, the classification arrives with `security_reason` saying "the code is simple
+and well structured."
 
-**이것이 재구축의 실제 차별점이다** — 오리지널리티 3번("악성코드 판정을 LLM 단독에
-맡기지 않음")의 근거가 "LLM은 못 믿는다"가 아니라 **"모델이 계약을 지킬 수 있는지
-검증되지 않은 채 신뢰된다"**로 바뀐다. 훨씬 구체적이고 고칠 수 있는 문제다.
+**This is the rebuild's actual differentiator** — the rationale for originality item 3
+("do not leave malware classification to an LLM alone") changes from "LLMs cannot be trusted" to
+**"the model is trusted without verifying whether it can follow the contract."**
+That is a far more concrete and fixable problem.
 
-대응 방향(ADR에서 확정): 기동 시 **계약 준수 스모크 테스트** — 알려진 깨끗한 샘플과
-알려진 악성 샘플로 모델을 검사하고, 통과하지 못하면 채점을 거부하거나 등급을 낮춘다.
-결정적 신호(의존성·네트워크 호출·난독화)와의 결합은 그 위에 얹는다.
+Response direction (finalized in the ADR): a **contract-compliance smoke test** at startup — inspect
+the model with a known clean sample and a known malicious sample; if it fails, refuse grading or lower
+its grade. Add deterministic signals (dependencies, network calls, obfuscation) on top.
 
 ---
 
-### 참고: 1.5b 원측정 (철회된 판정의 근거 데이터)
+### Reference: original 1.5b measurement (evidence data for the withdrawn judgment)
 
-**의도적으로 깨끗한 digest**(6줄 JSON 로거, 네트워크·의존성·난독화 전무)로 n=14:
+With an **intentionally clean digest** (6-line JSON logger, no network, dependencies, or obfuscation), n=14:
 
 ```
 security_flag=true                9/14  (64%)
-description 이 ⚠ 로 시작           5/14
-불일치 (flag=false 인데 경고접두어)  5/14
+description starts with ⚠           5/14
+mismatch (flag=false yet warning-prefixed)  5/14
 ```
 
-`flag`와 `description`이 **완벽하게 역상관**이다 — flag=true인 9회는 desc가 경고하지
-않고, flag=false인 5회는 desc가 경고한다. 그리고 `security_reason` 필드에
-`"⚠ SECURITY: The code is a simple, well-structured..."` 가 들어간다. 즉 **사유
-필드에 설명이 들어가고, 사유는 "괜찮다"인데 플래그는 "악성"**이다.
+`flag` and `description` are **perfectly inversely correlated** — in the 9 flag=true runs, desc does
+not warn; in the 5 flag=false runs, desc warns. And the `security_reason` field contains
+`"⚠ SECURITY: The code is a simple, well-structured..."`. In other words, **the reason field
+contains an explanation, the reason says "fine," but the flag says "malicious."**
 
-프롬프트(`libs/ollama.py:33`)는 flag가 true일 때 description을 `⚠ SECURITY: `로
-시작하라고 지시한다. 모델이 그 지시를 필드 경계 너머로 적용하고 있다.
+The prompt (`libs/ollama.py:33`) instructs description to begin with `⚠ SECURITY: ` when the flag is
+true. The model applies that instruction across field boundaries.
 
-⚠️ **이 수치는 1.5b 기준이라 씨앗에 대한 판정으로 쓸 수 없다.** 7b(기본값)·32b(이
-기계 최대치)에서 재측정한 뒤에만 인용한다.
+⚠️ **Because this number comes from 1.5b, it cannot be used to judge the seed.** Cite it only after
+remeasuring with 7b (default) and 32b (the maximum on this machine).
 
-## D-4. 모델 선택 근거 (이 기계 최대치)
+## D-4. Model-selection rationale (maximum on this machine)
 
-| 모델 | 크기 | 판정 |
+| Model | Size | Decision |
 |---|---|---|
-| qwen2.5-coder:1.5b | 1.0 GB | 예비 측정용 |
-| qwen2.5-coder:7b | 4.7 GB | **씨앗 기본값** — 공정 비교 기준 |
-| qwen2.5-coder:32b | 19.9 GB | **이 기계 최대치** — 48GB 중 GPU 기본 할당 ~36GB에 여유 있게 들어감 |
-| 70b Q4 | ~40 GB | 기본 GPU 할당 초과 → 스래싱. 제외 |
+| qwen2.5-coder:1.5b | 1.0 GB | Preliminary measurement |
+| qwen2.5-coder:7b | 4.7 GB | **Seed default** — fair comparison baseline |
+| qwen2.5-coder:32b | 19.9 GB | **Maximum on this machine** — comfortably fits the default GPU allocation of ~36GB from 48GB |
+| 70b Q4 | ~40 GB | Exceeds default GPU allocation → thrashing. Excluded |
 
-같은 계열로 통일한 이유: 크기만 바꿔야 "모델이 작아서인가, 설계가 나빠서인가"를
-분리할 수 있다.
+Reason for using one family: changing only size isolates "is the model too small, or is the design bad?"
 
-## 도구 자체의 결함 (부수 발견)
+## Defect in the tool itself (incidental discovery)
 
-`ollama pull` 이 레지스트리 503으로 **실패했는데 exit 0을 반환**했다.
+`ollama pull` **failed on a registry 503 but returned exit 0**.
 
 ```
 Error: pull model manifest: 503: upstream connect error ...
 $ echo $?  → 0
 ```
 
-종료코드를 믿고 다음 단계로 갔다가 `model not found` 404를 맞았다. 이후 모든 pull은
-`ollama list`로 검증한다. **종료코드는 성공의 증거가 아니다** — 이 세션에서 같은
-교훈이 나온 세 번째 사례다.
+Trusting the exit code and proceeding led to a `model not found` 404. Verify every subsequent pull
+with `ollama list`. **An exit code is not evidence of success** — the third instance of this lesson
+in this session.
 
 ---
 
-## C. 반증 (직접 수행, 위임 금지) — **프로젝트 방향을 바꾸는 발견**
+## C. Falsification (performed directly, no delegation) — **a discovery that changes project direction**
 
-### C-1. 직접 경쟁자
+### C-1. Direct competitors
 
-"로컬 LLM으로 남의 GitHub 레포를 발견·채점·자동 소셜 액션"하는 정확한 동종 도구는
-검색으로 찾지 못했다. 나온 것은 인접 영역(LLM 벤치마크, 모델 추천, eval 학습 레포)
-이고 방향이 다르다. → 발견+채점 부분의 틈새는 실재한다.
+Search found no exact peer tool that "discovers and grades other people's GitHub repositories with
+a local LLM and performs automatic social actions." Results were in adjacent areas (LLM benchmarks,
+model recommendations, eval-training repositories) and pointed elsewhere. → The discovery+grading niche is real.
 
-### C-2. ⚠️ 자동 팔로우·스타가 GitHub 정책 위반
+### C-2. ⚠️ Automatic follows and stars violate GitHub policy
 
-**GitHub Acceptable Use Policies가 명시적으로 금지한다:**
+**GitHub Acceptable Use Policies explicitly prohibit this:**
 > "rank abuse, such as automated starring or following"
 > "inauthentic interactions ... automated inauthentic activity"
 
-근거:
+Evidence:
 - GitHub Docs, Acceptable Use Policies (site-policy)
-- ICSE 2026 (CMU): 18,617개 저장소 600만 가짜 스타, GitHub이 반응형 적발·삭제 중
+- ICSE 2026 (CMU): 18,617 repositories, 600 myriad fake stars, GitHub reactively detecting and deleting them
 
-**씨앗의 핵심 워크플로우가 이 금지 조항에 정면으로 걸린다.** `main.py`가 체이닝하는
-`subscribe`(자동 팔로우)와 `star`(자동 스타)가 바로 "automated starring or
-following"이다. 점수가 임계를 넘으면 사람 확인 없이 실행된다.
+**The seed's core workflow directly violates this provision.** The `subscribe` (automatic follow)
+and `star` (automatic star) chained by `main.py` are exactly "automated starring or following."
+They run without human confirmation when a score exceeds the threshold.
 
-### C-3. 이 반증이 프로젝트에 하는 일
+### C-3. What this falsification does to the project
 
-**재구축은 씨앗의 자동 소셜 액션을 그대로 복제하면 안 된다.** ToS 위반 도구를
-엔터프라이즈 레벨로 만드는 것은 형용모순이다.
+**The rebuild must not copy the seed's automatic social actions unchanged.** Making a
+ToS-violating tool enterprise-grade is a contradiction.
 
-방향 재정립 (ADR에서 확정):
-- **살린다**: 발견 + 로컬 LLM 채점 + 결정적 보안 스크리닝 — 이 부분은 가치 있고
-  정책 문제도 없다. 읽기 전용이다.
-- **바꾼다**: 자동 팔로우·스타 → **큐레이션 산출물**(랭킹된 목록, 근거 포함)로 대체.
-  사용자가 그 목록을 보고 *자기 손으로* 결정한다. 자동 소셜 액션은 기본 제거.
-- **선택적으로 남긴다면**: machine account + 명시적 인간 승인 게이트를 강제하고,
-  GitHub AUP를 README에 인용하며, 기본값은 항상 dry-run. 단 이건 회색지대라
-  기본 배포에서는 빼는 것이 안전하다.
+Revised direction (finalized in the ADR):
+- **Keep**: discovery + local-LLM grading + deterministic security screening — this part is valuable
+  and has no policy problem. It is read-only.
+- **Change**: replace automatic follows and stars with a **curation artifact** (ranked list with evidence).
+  The user reviews that list and decides *by hand*. Remove automatic social actions from the default.
+- **If retained optionally**: require a machine account + explicit human approval gate, cite
+  GitHub AUP in the README, and always default to dry-run. But this is a gray area, so
+  excluding it from the default distribution is safer.
 
-### C-4. 내 Phase 0 판단을 뒤집는다 — 근거와 함께
+### C-4. Reverse my Phase 0 judgment — with evidence
 
-Phase 0에서 나는 "자동 행동 사람 게이트"가 오너 다중 선택에서 빠졌으므로 "자동
-행동을 유지한다"고 판단했다. **C-2가 그 판단의 전제를 무너뜨린다.** 오너가 그 옵션을
-안 고른 것은 "ToS 위반이어도 유지하라"는 뜻이 아니라, 그 사실을 몰랐기 때문이다
-(나도 clone 시점엔 몰랐다).
+In Phase 0, I judged that because "human gate for automatic actions" was absent from the owner's
+multiple choice, automatic actions should remain. **C-2 destroys the premise of that judgment.**
+The owner did not omit the option to mean "keep it even if it violates ToS"; the owner did not know
+that fact (and neither did I at clone time).
 
-CommitLore 원칙 그대로다 — **새 증거는 결정을 뒤집는 정당한 사유다.** 자동 소셜
-액션을 기본에서 제거하는 쪽으로 방향을 바꾸고, 이 결정을 ADR과 커밋 트레일러에
-`Ruled-out: 자동 팔로우·스타 기본 탑재 | GitHub AUP "rank abuse" 위반`으로 남긴다.
+This follows the CommitLore principle exactly — **new evidence is a legitimate reason to reverse
+a decision.** Change direction to remove automatic social actions from the default, and record the
+decision in the ADR and commit trailer as
+`Ruled-out: automatic follow and star by default | violates GitHub AUP "rank abuse"`.
 
-오너가 "10일 자율" + "자동 행동 사람 게이트 미선택"을 지시했지만, 그 지시는 이
-정책 사실을 알기 전의 것이다. 자율 위임은 **오너가 불이익을 볼 결정을 대신 내릴
-권한**까지 포함하지 않는다 — ToS 위반 도구를 오너 이름으로 배포하는 것은 오너
-계정 위험이므로, 안전한 기본값(자동 액션 제거)으로 가고 이 판단 근거를 남긴다.
+The owner directed "10 days autonomous" + "human gate for automatic actions not selected," but that
+directive predates knowledge of this policy fact. Autonomous delegation does not include **authority
+to make a decision that harms the owner on their behalf** — distributing a ToS-violating tool under
+the owner's name risks the owner's account, so use the safe default (remove automatic actions) and
+retain the rationale for this judgment.
 
 ---
 
-## D-5. 근본 원인은 모델 크기가 아니라 **프롬프트가 필드 경계를 넘으라고 지시하는 것**
+## D-5. The root cause is not model size, but **a prompt that instructs the model to cross field boundaries**
 
-D-3은 "씨앗이 모델의 계약 준수 능력을 확인하지 않는다"로 끝났다. 절반만 맞았다.
-교란변수를 분리했다 — 깨끗한 digest, n=12:
+D-3 concluded that "the seed does not check the model's contract-compliance ability." That was only
+half right. The confounders were separated — clean digest, n=12:
 
-| 모델 | 프롬프트 | security_flag 오탐 | description ⚠ 시작 |
+| Model | Prompt | security_flag false positive | description starts with ⚠ |
 |---|---|---|---|
-| 1.5b | 씨앗 원문 | **9/12** | **11/12** |
-| 1.5b | 엄격 | **0/12** | **0/12** |
-| 7b | 씨앗 원문 | 0/12 | 0/12 |
-| 7b | 엄격 | 0/12 | 0/12 |
+| 1.5b | Seed original | **9/12** | **11/12** |
+| 1.5b | Strict | **0/12** | **0/12** |
+| 7b | Seed original | 0/12 | 0/12 |
+| 7b | Strict | 0/12 | 0/12 |
 
-**실패에는 작은 모델과 씨앗 프롬프트가 둘 다 필요하다.** 엄격한 프롬프트를 주면
-1.5b도 오탐하지 않는다.
+**Failure requires both a small model and the seed prompt.** With the strict prompt,
+even 1.5b produces no false positives.
 
-### 어느 문구가 원인인지까지 좁혔다
+### Narrowed down to the exact language causing it
 
-씨앗 원문(`libs/ollama.py`)의 해당 지시:
+The relevant instruction in the seed original (`libs/ollama.py`):
 
 > `When flagged, set idea and skill to 1.0 and begin description with '⚠ SECURITY: '`
 
-같은 지시를 **따옴표를 풀어 산문에 녹이면** 1.5b 오탐이 4~6/10 → **0/10**이 된다.
+If the same instruction is **removed from quotation marks and incorporated into prose**, 1.5b false
+positives change from 4~6/10 → **0/10**.
 
 ```
-따옴표 리터럴 포함 프롬프트  x  어느 digest든   4~6/10
-따옴표 없이 산문화한 프롬프트 x  어느 digest든   0/10
+prompt with a quoted literal   x  any digest   4~6/10
+prompt paraphrased, no quotes  x  any digest   0/10
 ```
 
-**따옴표로 감싼 리터럴이 작은 모델에게 "이걸 출력하라"로 읽힌다.** 지시 자체가
-아니라 리터럴의 표기법이 방아쇠다.
+**A quoted literal reads as "output this" to a small model.** The trigger is not the instruction
+itself, but the literal notation.
 
-### 이것이 gitseed 에 주는 설계 규칙
+### Design rules this gives gitseed
 
-1. **프롬프트에 출력용 마커를 리터럴로 넣지 않는다.** 서식 지시가 데이터 필드로
-   넘어가는 순간 작은 모델은 그것을 내용으로 복사한다
-2. 필드는 직교하게 유지한다 — 보안 판정은 `security_flag` 가 소유하고
-   `description` 은 설명만 한다
-3. 그럼에도 **스모크 게이트는 필요하다.** 사용자가 어떤 프롬프트·모델 조합을 쓸지
-   우리가 정하지 못하므로, 실제로 쓰는 조합을 검사해야 한다
+1. **Do not put an output marker in the prompt as a literal.** The moment a format instruction crosses
+   into a data field, a small model copies it as content
+2. Keep fields orthogonal — `security_flag` owns the security decision, while
+   `description` only explains
+3. Even so, **the smoke gate remains necessary.** We do not control which prompt/model combination
+   a user runs, so inspect the combination actually in use
 
-### 스모크 게이트 실측 (씨앗 프롬프트 원문 사용)
+### Measured smoke gate (using the seed prompt verbatim)
 
-| 모델 | 프롬프트 | 게이트 | 사유 |
+| Model | Prompt | Gate | Reason |
 |---|---|---|---|
-| 1.5b | 씨앗 원문 | **FAIL** | 오탐 5/5 + description 필드 누수 |
-| 1.5b | 엄격 | **FAIL** | 동일 입력 5회에 skill [7, 9] — 점수 흔들림 |
-| 7b | 씨앗 원문 | PASS | |
-| 7b | 엄격 | PASS | |
+| 1.5b | Seed original | **FAIL** | 5/5 false positives + description field leakage |
+| 1.5b | Strict | **FAIL** | skill [7, 9] across 5 runs with the same input — score variance |
+| 7b | Seed original | PASS | |
+| 7b | Strict | PASS | |
 
-1.5b 는 **두 프롬프트에서 서로 다른 이유로** 거부된다. 나는 "엄격 프롬프트면 1.5b도
-통과할 것"이라 예상했고 **측정 없이 가정한 것이었다.** 게이트가 내 기대를 정정했다.
+1.5b is rejected **for different reasons under the two prompts**. I expected "1.5b will pass with
+the strict prompt," which was **an assumption without measurement.** The gate corrected my expectation.
 
-> ⚠️ 이 검증의 첫 시도는 씨앗 프롬프트를 **의역**해서 썼고 네 조합을 전부 통과시켰다.
-> 의역이 따옴표 리터럴을 없애 버렸기 때문이다. 원문을 쓰지 않으면 재현되지 않는다.
+> ⚠️ The first attempt at this verification **paraphrased** the seed prompt and passed all four combinations.
+> The paraphrase removed the quoted literal. It does not reproduce without the original wording.

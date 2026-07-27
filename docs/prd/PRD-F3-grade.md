@@ -1,23 +1,23 @@
-# PRD F3 — 모델 채점 + 계약 검증
+# PRD F3 — Model grading + contract verification
 
-## 목표
-로컬 LLM으로 `idea`·`skill`·`description`을 얻되, **모델이 출력 계약을 지킬 수
-있음을 먼저 증명한 뒤에만** 신뢰한다.
+## Goal
+Use a local LLM to obtain `idea`, `skill`, and `description`, but trust it **only after first
+proving that the model can follow the output contract**.
 
-## 근거
-`docs/PHASE1-EVIDENCE.md` D-3. 씨앗은 모델이 *설치*됐는지만 확인한다
-(`libs/ollama.py:47`). 계약 준수 능력은 확인하지 않는다.
+## Evidence
+`docs/PHASE1-EVIDENCE.md` D-3. The seed checks only whether the model is *installed*
+(`libs/ollama.py:47`). It does not check the ability to follow the contract.
 
-## 요구사항
-1. **기동 시 스모크 테스트**: 알려진 깨끗한 샘플 + 알려진 악성 샘플로 모델을 검사.
-   통과 못 하면 F3를 비활성화하고 F2만으로 동작한다(기능 저하, 무결성 유지)
-2. 스모크 결과를 캐시. 모델 태그가 바뀌면 재실행
-3. `temperature`·모델 태그·프롬프트 버전을 결과에 함께 저장 — 재현 가능해야 한다
-4. **산문 필드는 점수에 기여하지 않는다.** `description`은 표시용이며 랭킹 입력이
-   아니다 (D-2: 7b에서도 `description`이 보안 접두어를 흘림)
+## Requirements
+1. **Startup smoke test**: inspect the model with a known clean sample + known malicious sample.
+   If it fails, disable F3 and operate with F2 only (degraded function, preserved integrity)
+2. Cache the smoke result. Rerun when the model tag changes
+3. Store `temperature`, model tag, and prompt version with results — results must be reproducible
+4. **Prose fields do not contribute to scores.** `description` is for display, not ranking input
+   (D-2: even 7b leaked the security prefix into `description`)
 
-## AC (기계 판정)
-- [ ] 스모크 실패를 주입하면 F3가 비활성화되고 파이프라인이 F2만으로 완주한다
-- [ ] 동일 입력 20회 호출에서 `idea`·`skill` 표준편차 0 (실측 근거: 7b sd=0.000)
-- [ ] 결과 행에 모델 태그·temperature·프롬프트 버전이 들어있다
-- [ ] `description`을 임의 문자열로 바꿔도 랭킹 순서가 변하지 않는 테스트
+## AC (mechanical decision)
+- [ ] Injecting a smoke failure disables F3 and the pipeline completes with F2 only
+- [ ] Across 20 calls with the same input, `idea` and `skill` standard deviation is 0 (measured evidence: 7b sd=0.000)
+- [ ] Result rows contain model tag, temperature, and prompt version
+- [ ] Test that changing `description` to an arbitrary string does not change ranking order

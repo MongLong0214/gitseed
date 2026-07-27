@@ -1,11 +1,11 @@
-# F1 — GitHub 후보 수집 (키스톤)
+# F1 — Collect GitHub candidates (keystone)
 
-> 이 티켓은 Phase 4에서 누락되어 구현 후 작성되었으며, 아래 내용은 이미 구현된 코드와 테스트를 사실대로 기록한다.
+> This ticket was omitted in Phase 4 and written after implementation; the content below truthfully records code and tests already implemented.
 
-F1은 GitHub 저장소 후보를 수집하고, 응답이 일부뿐이면 그 사실을 숨기지 않고
-`CollectResult.complete`와 `stopped_because`로 다음 단계에 전달한다.
+F1 collects GitHub repository candidates and, when a response is partial, does not hide that fact;
+it passes it to the next stage through `CollectResult.complete` and `stopped_because`.
 
-## 구현
+## Implementation
 
 **`gitseed/collect/ratelimit.py`**
 
@@ -25,9 +25,9 @@ def parse(headers: Mapping[str, str]) -> RateLimit: ...
 def classify(status: int, headers: Mapping[str, str]) -> str: ...
 ```
 
-`classify`는 `"ok"`, `"rate-limited"`, `"forbidden"`, `"error"` 중 하나를
-반환한다. 403은 헤더의 잔여량과 `Retry-After`를 보고 제한 소진과 권한 오류를
-구분한다.
+`classify` returns one of `"ok"`, `"rate-limited"`, `"forbidden"`, or `"error"`.
+For a 403, it uses the remaining quota in the headers and `Retry-After` to distinguish
+rate-limit exhaustion from a permissions error.
 
 **`gitseed/collect/search.py`**
 
@@ -73,15 +73,15 @@ def collect(
 ) -> CollectResult: ...
 ```
 
-내부 파서 `_parse_items(body: bytes) -> list[Candidate]`는 잘못된
-`full_name` 항목을 건너뛴다. `collect`는 페이지 사이 중복 저장소를 제거하고,
-짧은 페이지에서 종료한다. 제한 소진 시 기본값은 대기하지 않고 불완전 결과를
-반환하며, `wait=True`일 때만 리셋까지 대기한 뒤 한 번 재시도한다.
+The internal parser `_parse_items(body: bytes) -> list[Candidate]` skips items with an invalid
+`full_name`. `collect` removes duplicate repositories across pages and stops on a short page.
+When the rate limit is exhausted, it returns an incomplete result without waiting by default;
+only with `wait=True` does it wait until reset and retry once.
 
-## 현재 테스트
+## Current tests
 
-`tests/test_collect.py`는 네트워크 대신 `FakeTransport`를 사용하며 다음 테스트를
-포함한다.
+`tests/test_collect.py` uses `FakeTransport` instead of a network and includes the following
+tests.
 
 - `TestRateLimitParsing`: `test_reads_the_budget`,
   `test_header_casing_does_not_matter`,
@@ -105,33 +105,33 @@ def collect(
   `test_a_malformed_item_is_skipped_not_fatal`
 - `test_any_2xx_counts_as_ok` (`200`, `201`, `299`)
 
-`tests/test_pipeline.py`의
-`test_a_truncated_collection_makes_the_whole_run_incomplete`는 F1의 불완전 상태가
-파이프라인 전체에 전달되는 것을 검증한다.
+In `tests/test_pipeline.py`,
+`test_a_truncated_collection_makes_the_whole_run_incomplete` verifies that F1's incomplete state
+propagates through the entire pipeline.
 
-## AC (현재 코드로 기계 판정)
+## AC (mechanically decided by current code)
 
-- [x] 헤더 이름의 대소문자와 무관하게 제한 정보를 읽고, 누락되거나 정수가 아닌
-      값은 `None`으로 처리한다.
-- [x] 리셋 시각이 있으면 `seconds_until_reset`은 최소 1초를 반환한다.
-- [x] 모든 2xx와 429를 분류하고, 403 제한 소진과 403 권한 오류를 구분한다.
-- [x] 검색 쿼리를 URL 인코딩하고, 페이지 수·페이지 크기를 요청에 반영한다.
-- [x] 짧은 페이지에서 종료하고, 페이지 사이 중복을 제거하며, 잘못된 항목은
-      전체 수집을 실패시키지 않는다.
-- [x] 제한 소진 전까지 모은 후보를 보존하면서 `complete=False`, 중단 사유,
-      가져온 페이지 수를 반환한다.
-- [x] 권한 오류에는 대기하지 않고, 예기치 않은 HTTP 상태는 상태 코드를 기록한다.
-- [x] `wait=True`는 리셋까지 대기한 뒤 한 번만 재시도하고, 계속 제한되면 종료한다.
-- [x] 위 AC는 `FakeTransport`로 네트워크 없이 실행된다.
+- [x] Read rate-limit information regardless of header-name case; treat missing or non-integer
+      values as `None`.
+- [x] When a reset time exists, `seconds_until_reset` returns at least 1 second.
+- [x] Classify every 2xx and 429; distinguish rate-limit-exhausted 403 from forbidden 403.
+- [x] URL-encode the search query and reflect page count and page size in the request.
+- [x] Stop on a short page, remove duplicates across pages, and do not fail the full collection
+      on an invalid item.
+- [x] Preserve candidates collected before rate-limit exhaustion while returning `complete=False`,
+      the stop reason, and the number of pages fetched.
+- [x] Do not wait on a permissions error; record the status code for an unexpected HTTP status.
+- [x] `wait=True` waits until reset and retries only once, then stops if still limited.
+- [x] The AC above runs without a network using `FakeTransport`.
 
-## 남은 실측 — issue #6
+## <a id="remaining-live-evidence-issue-6"></a> Remaining live evidence — issue #6
 
-403 권한 오류 분기는 주입 응답으로만 검증됐다. issue #6을 닫으려면 실제 GitHub
-응답에서 다음 근거를 함께 남겨야 한다.
+The 403 permissions-error branch has been verified only with injected responses. To close issue #6,
+retain the following evidence together from an actual GitHub response.
 
-- 상태 코드는 403이고 `X-RateLimit-Remaining`은 0보다 크며 `Retry-After`는 없다.
-- 결과는 `complete=False`이고 중단 사유가 권한 문제를 가리킨다.
-- 프로세스는 제한 리셋을 기다리거나 같은 요청을 재시도하지 않는다.
+- The status code is 403, `X-RateLimit-Remaining` is greater than 0, and `Retry-After` is absent.
+- The result is `complete=False`, and the stop reason points to a permissions problem.
+- The process does not wait for the rate-limit reset or retry the same request.
 
-토큰은 기록하지 않는다. 원문 응답에서는 위 판정에 필요한 상태 코드와 헤더만
-남긴다.
+Do not record the token. From the original response, retain only the status code and headers
+needed for the decisions above.
