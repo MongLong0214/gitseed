@@ -1,0 +1,21 @@
+Ruled-out: a --non-interactive flag so this runs in CI | it would be switched on
+  in CI, and a CI job that stars repositories is exactly the automation the AUP
+  forbids. A non-interactive run without --dry-run exits 1, verified
+Ruled-out: dropping withheld candidates from the table | a reviewer who sees only
+  the gradeable ones cannot tell a quiet day from a broken screener
+Warn: the real transport is now reachable from the CLI. Nothing in the test suite
+  touches it, and no live GitHub call has been made from this repository
+Verified: `python3 -m gitseed run --query x --fixtures tests/fixtures` exits 0 and
+  ranks two candidates, one of them withheld at severity high
+Verified: the default run asks for no approval; --approve-all without --dry-run
+  on a non-interactive stdin exits 1
+Verified: 125 tests, up from 119
+Evidence: gitseed/cli.py
+Evidence: tests/test_cli.py
+Follows: r-gs5b02
+Blast: system
+Undo: easy
+Certainty: firm
+Record-Id: r-gs6c03
+Provenance: authored
+CommitLore-Version: 2.0.0
