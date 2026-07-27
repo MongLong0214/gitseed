@@ -1,0 +1,13 @@
+Ruled-out: writing F1 as the plan it would have been | it would read as though it
+  guided the implementation, and nothing in the repository could contradict it
+Verified: `phase-gate.py 4 --repo MongLong0214/gitseed` now exits 0, every line
+  PASS, including the ticket-to-issue references it was failing on
+Evidence: docs/tickets/TICKETS.md
+Evidence: CONTRIBUTING.md
+Follows: r-gsc209
+Blast: local
+Undo: easy
+Certainty: firm
+Record-Id: r-gsd310
+Provenance: authored
+CommitLore-Version: 2.0.0
