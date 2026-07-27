@@ -68,6 +68,7 @@ class PipelineResult:
     #: One line per stage that stopped early, in the order they happened.
     incomplete_because: list[str] = field(default_factory=list)
     rate_limited: bool = False
+    grading_basis: ClaimBasis = ClaimBasis.MODEL
 
     def mark_incomplete(self, why: str) -> None:
         self.complete = False
@@ -104,7 +105,7 @@ def run(
     collected: CollectResult,
     *,
     fetch_files: Callable[[Candidate], FetchedFiles | Sequence[tuple[str, str]]],
-    grader: GradeClient,
+    grader: GradeClient | None,
 ) -> PipelineResult:
     """Carry `collected` through screening and grading.
 
@@ -113,7 +114,9 @@ def run(
     candidate rather than ending the run. One unreachable repository is not a
     reason to discard the nine that were fine.
     """
-    result = PipelineResult()
+    result = PipelineResult(
+        grading_basis=ClaimBasis.MODEL if grader is not None else ClaimBasis.ABSENT
+    )
 
     if not collected.complete:
         result.mark_incomplete(
@@ -190,6 +193,21 @@ def run(
                     severity=severity,
                     grade=None,
                     withheld=f"screening found {len(signals)} signal(s) at severity {severity}",
+                    skipped_files=skipped,
+                    screening_basis=ClaimBasis.DETERMINISTIC,
+                    screened_files=screened_files,
+                )
+            )
+            continue
+
+        if grader is None:
+            result.reviewed.append(
+                Reviewed(
+                    candidate=candidate,
+                    signals=signals,
+                    severity=severity,
+                    grade=None,
+                    withheld="model unavailable: deterministic-only",
                     skipped_files=skipped,
                     screening_basis=ClaimBasis.DETERMINISTIC,
                     screened_files=screened_files,

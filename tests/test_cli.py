@@ -87,6 +87,69 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "not recommended" in captured.out
 
 
+def test_a_failed_model_smoke_gate_labels_the_run_and_artifact(tmp_path, capsys) -> None:
+    # Given: identical deterministic inputs and one model that cannot keep its fields separate.
+    class UnusableGrader(_Grader):
+        def evaluate(self, digest: str) -> GradeResult:
+            self.seen.append(digest)
+            return GradeResult(7, 6, "WARNING: maybe unsafe", "test", 0.0, "v1")
+
+    full_artifact = tmp_path / "full.json"
+    degraded_artifact = tmp_path / "degraded.json"
+    options = ["run", "--query", "example"]
+
+    # When: each run reaches the same readable repository.
+    full_code = main(
+        [*options, "--artifact", str(full_artifact)],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+        grader=_Grader(),
+    )
+    full = capsys.readouterr()
+    degraded_code = main(
+        [*options, "--artifact", str(degraded_artifact)],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+        grader=UnusableGrader(),
+    )
+    degraded = capsys.readouterr()
+
+    # Then: deleting the coverage label or its artifact field makes this test fail.
+    assert full_code == 0
+    assert degraded_code == 2
+    assert "model coverage: model\n" in full.out
+    assert "model coverage: absent (deterministic-only)\n" in degraded.out
+    assert "model smoke gate failed" in degraded.err
+    payload = json.loads(degraded_artifact.read_text())
+    assert payload["output"]["result"]["grading_basis"] == "absent"
+    assert payload["ports"]["model_smoke"]["passed"] is False
+
+
+def test_an_unreachable_model_falls_back_to_a_labeled_deterministic_run(monkeypatch, capsys) -> None:
+    # Given: Ollama cannot answer the model discovery request.
+    class OfflineOllama:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(cli, "UrllibTransport", OfflineOllama)
+
+    # When: the normal CLI path starts a run.
+    exit_code = main(
+        ["run", "--query", "example"],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+    )
+
+    # Then: removing resolution fallback makes this test fail instead of returning the incomplete run.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "model coverage: absent (deterministic-only)" in captured.out
+    assert "could not reach Ollama" in captured.err
+
+
 def test_radar_defaults_to_dry_run_before_any_approval_path() -> None:
     # Given: the product command is invoked without an explicit write option.
     args = cli._parser().parse_args(["radar", "--query", "example"])
@@ -240,6 +303,7 @@ def test_every_failed_read_reports_zero_coverage_not_a_clean_run(tmp_path, capsy
         "score coverage: 3/3\n"
         "unavailable features: none\n"
         "security coverage: absent (0 files)\n"
+        "model coverage: model\n"
         "security findings: none\n"
         "unverified security claims: none\n"
         "risk: unknown\n"
@@ -350,7 +414,7 @@ class _Grader:
         return GradeResult(idea=7, skill=6, description="d", model="test", temperature=0.0, prompt_version="v1")
 
     def flags_malicious(self, digest: str) -> bool:
-        return False
+        return "base64.b64decode" in digest
 
 
 class _GitHubTransport:
@@ -556,7 +620,9 @@ def test_grade_timeout_is_passed_to_the_ollama_transport(monkeypatch) -> None:
             return 200, {}, json.dumps({"models": [{"name": "qwen2.5-coder:32b"}]}).encode()
 
         def request(self, method: str, url: str, data=None, extra_headers=None) -> tuple[int, dict[str, str], bytes]:
-            return 200, {}, json.dumps({"response": json.dumps({"idea": 7, "skill": 6, "description": "d"})}).encode()
+            prompt = json.loads(data)["prompt"]
+            response = {"malicious": "base64.b64decode" in prompt} if "boolean malicious" in prompt else {"idea": 7, "skill": 6, "description": "d"}
+            return 200, {}, json.dumps({"response": json.dumps(response)}).encode()
 
     monkeypatch.setattr(cli, "UrllibTransport", OllamaTransport)
     # When: the operator changes the grade timeout.

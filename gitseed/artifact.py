@@ -7,13 +7,14 @@ from decimal import Decimal
 
 from .collect.search import Candidate, CollectResult
 from .evidence import ClaimBasis
+from .grade.smoke import SmokeResult
 from .grade.types import GradeResult
 from .pipeline.run import FetchedFiles, PipelineResult, Reviewed
 from .ports import RepositoryMetadata, RunRequest
 from .scoring import Feature, Recommendation, Score, ScoreInputs
 from .screen.signals import Signal
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -61,6 +62,7 @@ class RunArtifact:
     repositories: tuple[RepositoryTrace, ...]
     result: PipelineResult
     scores: tuple[ScoredCandidate, ...]
+    model_smoke: SmokeResult
     failures: tuple[PortFailure, ...] = ()
 
     def to_bytes(self) -> bytes:
@@ -72,6 +74,7 @@ class RunArtifact:
                 "collection": asdict(self.collection),
                 "repositories": [_trace_to_dict(trace) for trace in self.repositories],
                 "failures": [asdict(failure) for failure in self.failures],
+                "model_smoke": asdict(self.model_smoke),
             },
             "output": {
                 "result": asdict(self.result),
@@ -100,6 +103,7 @@ class RunArtifact:
             ),
             result=_result_from_dict(output["result"]),
             scores=tuple(_scored_from_dict(scored) for scored in output["scores"]),
+            model_smoke=_smoke_from_dict(ports["model_smoke"]),
             failures=tuple(PortFailure(**failure) for failure in ports["failures"]),
         )
 
@@ -148,6 +152,10 @@ def _grade_from_dict(payload: dict | None) -> GradeResult | None:
     return None if payload is None else GradeResult(**payload)
 
 
+def _smoke_from_dict(payload: dict) -> SmokeResult:
+    return SmokeResult(bool(payload["passed"]), str(payload["model"]), list(payload["failures"]))
+
+
 def _trace_to_dict(trace: RepositoryTrace):
     return {
         "candidate": asdict(trace.candidate),
@@ -188,6 +196,7 @@ def _result_from_dict(payload: dict) -> PipelineResult:
         complete=bool(payload["complete"]),
         incomplete_because=list(payload["incomplete_because"]),
         rate_limited=bool(payload["rate_limited"]),
+        grading_basis=ClaimBasis(payload["grading_basis"]),
     )
 
 

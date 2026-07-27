@@ -10,6 +10,7 @@ from .artifact import (
     ScoredCandidate,
 )
 from .collect.search import Candidate, CollectResult
+from .grade.smoke import SmokeResult, run_smoke
 from .grade.types import GradeResult
 from .pipeline.run import FileFetchError, FetchedFiles, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
@@ -25,7 +26,7 @@ class MissingPortResponse(RuntimeError):
         return f"no recorded {self.port} response for {self.target}"
 
 
-def execute(request: RunRequest, ports: RunPorts) -> RunArtifact:
+def execute(request: RunRequest, ports: RunPorts, *, model_smoke: SmokeResult | None = None) -> RunArtifact:
     failures: list[PortFailure] = []
     trace_failures: dict[str, list[PortFailure]] = {}
     metadata: dict[str, RepositoryMetadata | None] = {}
@@ -89,8 +90,15 @@ def execute(request: RunRequest, ports: RunPorts) -> RunArtifact:
         files[candidate.repo] = fetched
         return fetched
 
-    model = _RecordingModel(ports, grades, failures, trace_failures)
+    smoke = run_smoke(ports.model) if model_smoke is None else model_smoke
+    model = _RecordingModel(ports, grades, failures, trace_failures) if smoke.passed else None
     result = run(collected, fetch_files=read, grader=model)
+
+    if smoke.passed is False:
+        result.mark_incomplete(
+            "model smoke gate failed: "
+            + ("; ".join(smoke.failures) or "model returned no usable answer")
+        )
 
     if started_at is None:
         result.mark_incomplete("clock failed; repository metadata was not read")
@@ -127,15 +135,7 @@ def execute(request: RunRequest, ports: RunPorts) -> RunArtifact:
         )
         for candidate in collected.candidates
     )
-    return RunArtifact(
-        request,
-        started_at,
-        collected,
-        repositories,
-        result,
-        tuple(scored),
-        tuple(failures),
-    )
+    return RunArtifact(request, started_at, collected, repositories, result, tuple(scored), smoke, tuple(failures))
 
 
 class _RecordingModel:
@@ -177,6 +177,7 @@ def replay(data: bytes) -> RunArtifact:
             _ReplayModel(source),
             _ReplayClock(source),
         ),
+        model_smoke=source.model_smoke,
     )
 
 

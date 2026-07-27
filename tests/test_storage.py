@@ -49,7 +49,7 @@ class Model:
         return GradeResult(8, 7, "small utility", "fixture", 0.0, "fixture-v1")
 
     def flags_malicious(self, digest: str) -> bool:
-        return False
+        return "base64.b64decode" in digest
 
 
 class Clock:

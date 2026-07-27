@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from gitseed.application import execute, replay
 from gitseed.collect.search import Candidate, CollectResult
+from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
@@ -43,7 +44,7 @@ class Model:
         return GradeResult(8, 7, "small utility", "fixture", 0.0, "fixture-v1")
 
     def flags_malicious(self, digest: str) -> bool:
-        return False
+        return "base64.b64decode" in digest
 
 
 class Clock:
@@ -95,6 +96,63 @@ def test_replay_recomputes_output_from_recorded_port_responses() -> None:
     # Then: the derived output returns to the live run's bytes.
     assert corrupted != live_bytes
     assert replayed.to_bytes() == live_bytes
+
+
+def test_smoke_gate_runs_once_before_two_candidates_use_the_model() -> None:
+    # Given: two candidates and a model that counts every request.
+    second = Candidate("org/second", "org", "https://github.com/org/second", 3, "2026-07-27T00:00:00Z")
+
+    class TwoRepositories(Repository):
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[CANDIDATE, second], pages_fetched=1)
+
+    class CountingModel(Model):
+        def __init__(self) -> None:
+            self.evaluations = 0
+            self.flags = 0
+
+        def evaluate(self, digest: str) -> GradeResult:
+            self.evaluations += 1
+            return super().evaluate(digest)
+
+        def flags_malicious(self, digest: str) -> bool:
+            self.flags += 1
+            return "base64.b64decode" in digest
+
+    model = CountingModel()
+
+    # When: application execution starts.
+    artifact = execute(RunRequest("small tools", 2), RunPorts(TwoRepositories(), Files(), model, Clock()))
+
+    # Then: five smoke grades and two candidate grades prove the gate did not repeat per candidate.
+    assert artifact.result.grading_basis is ClaimBasis.MODEL
+    assert model.evaluations == 7
+    assert model.flags == 6
+
+
+def test_an_unusable_model_degrades_to_deterministic_only() -> None:
+    # Given: a reachable model whose answer violates the smoke field boundary.
+    class UnusableModel(Model):
+        def __init__(self) -> None:
+            self.evaluations = 0
+
+        def evaluate(self, digest: str) -> GradeResult:
+            self.evaluations += 1
+            return GradeResult(8, 7, "WARNING: unsafe", "fixture", 0.0, "fixture-v1")
+
+    model = UnusableModel()
+
+    # When: application execution starts.
+    artifact = execute(RunRequest("small tools", 1), RunPorts(Repository(), Files(), model, Clock()))
+
+    # Then: changing the fallback to pass `model` into `run` makes these assertions fail.
+    assert artifact.model_smoke.passed is False
+    assert artifact.result.complete is False
+    assert artifact.result.grading_basis is ClaimBasis.ABSENT
+    assert artifact.repositories[0].grade is None
+    assert artifact.result.reviewed[0].grade is None
+    assert "model smoke gate failed" in artifact.result.incomplete_because[0]
+    assert model.evaluations == 5
 
 
 def test_the_run_seam_has_no_external_writer_port() -> None:
