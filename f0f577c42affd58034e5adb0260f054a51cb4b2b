@@ -1,0 +1,13 @@
+Limit: F2 는 GitHub API 메타데이터만 본다 — clone 을 전제하면 디스크·시간·악성코드
+  실행 위험을 지불하게 된다
+Warn: Signal 은 인용(path·line·excerpt) 없이 만들 수 없다. 인용 없는 신호는
+  사용자가 검증할 수 없고, 검증 못 하는 보안 판정은 씨앗이 이미 실패한 지점이다
+Verified: 씨앗 실측 — 1.5b 오탐 9/14, 7b 0/14, 32b 0/14 (PHASE1-EVIDENCE D-3)
+Unverified: 타이포스쿼팅 목록의 출처와 갱신 주기 — T-201 착수 시 정한다
+Evidence: docs/tickets/F2-screen.md
+Blast: local
+Undo: easy
+Certainty: firm
+Record-Id: r-gs0003
+Provenance: authored
+CommitLore-Version: 2.0.0
