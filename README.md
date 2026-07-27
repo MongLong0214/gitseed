@@ -37,6 +37,21 @@ python3 -m gitseed run --query x --fixtures tests/fixtures
 
 The replay prints the ranked clean fixture and withholds the malicious fixture after deterministic screening. For a live run, model selection uses `OLLAMA_MODEL` when set; otherwise it chooses the first installed preferred model in this order: `qwen2.5-coder:32b`, `qwen2.5-coder:7b`, `qwen2.5-coder:1.5b`.
 
+## CLI
+
+`radar` runs the review queue and defaults to `--dry-run`; external actions remain behind an interactive `Approval`. Its score measures small-versus-medium size; it does not predict that a repository will take off.
+
+```sh
+python3 -m gitseed radar --query "small tools" --artifact run.json
+python3 -m gitseed explain owner/repo --artifact run.json
+python3 -m gitseed export run.json > exported-run.json
+python3 -m gitseed radar --replay run.json
+```
+
+`explain` shows feature contributions, the weight-set version, and unavailable inputs. `export` writes the canonical versioned artifact, so a consumer can round-trip it with the same schema. A replayed artifact is labelled as its source in CLI status output.
+
+Exit codes: `0` complete; `1` invalid invocation or operational failure; `2` incomplete run.
+
 ## What it does not do yet
 
 - The review queue's full offline fixture cycle runs under a real PTY; production still refuses piped approval.

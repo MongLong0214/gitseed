@@ -8,6 +8,7 @@ from base64 import b64encode
 from pathlib import Path
 
 from gitseed import cli
+from gitseed.artifact import RunArtifact, SCHEMA_VERSION
 from gitseed.cli import (
     SOURCE_FILE_BYTE_CAP,
     SOURCE_FILE_COUNT_CAP,
@@ -79,6 +80,15 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "fixture/clean" in captured.out
     assert "fixture/malicious" in captured.out
     assert "withheld" in captured.out
+    assert "not recommended" in captured.out
+
+
+def test_radar_defaults_to_dry_run_before_any_approval_path() -> None:
+    # Given: the product command is invoked without an explicit write option.
+    args = cli._parser().parse_args(["radar", "--query", "example"])
+
+    # When/Then: approval collection is not reachable unless dry-run is disabled.
+    assert args.dry_run is True
 
 
 def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) -> None:
@@ -104,7 +114,69 @@ def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) ->
     # Then: replay performs no live I/O and renders the same result.
     assert live_code == replay_code == 0
     assert replayed.out == live.out
-    assert replayed.err == live.err == ""
+    assert live.err == ""
+    assert replayed.err == "source: replayed artifact\n"
+
+
+def test_radar_replay_cannot_reach_approval_without_disabling_dry_run(tmp_path, monkeypatch, capsys) -> None:
+    # Given: a canonical artifact and an approval path that must stay untouched.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    monkeypatch.setattr(cli, "_approvals", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("approval reached")))
+
+    # When: radar runs normally and then renders the recorded queue.
+    radar_code = main(["radar", "--query", "example", "--fixtures", str(FIXTURES)])
+    exit_code = main(["radar", "--replay", str(artifact)])
+
+    # Then: it remains a read-only replay and says so.
+    captured = capsys.readouterr()
+    assert radar_code == exit_code == 0
+    assert "source: replayed artifact" in captured.err
+
+
+def test_every_command_help_documents_the_exit_code_convention() -> None:
+    # Given: every public command parser.
+    parser = cli._parser()
+
+    # When/Then: help gives one shared meaning to its process status.
+    for command in ("radar", "run", "replay", "explain", "export"):
+        help_text = parser._subparsers._group_actions[0].choices[command].format_help()
+        assert " ".join(cli.EXIT_CODES.split()) in " ".join(help_text.split())
+
+
+def test_explain_names_unavailable_features_and_weight_version(tmp_path, capsys) -> None:
+    # Given: fixture metadata has no score inputs, so every feature is unavailable.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: an operator asks why the graded repository was scored.
+    exit_code = main(["explain", "fixture/clean", "--artifact", str(artifact)])
+
+    # Then: unavailable inputs are named rather than silently counted as zero.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "weight set: m0-contributions-v1" in captured.out
+    assert "unavailable features: commit_cadence_30d, contributor_count, has_license" in captured.out
+    assert "source: replayed artifact" in captured.err
+
+
+def test_export_writes_the_canonical_versioned_artifact_and_round_trips(tmp_path, capsys) -> None:
+    # Given: radar recorded one canonical run artifact.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: export writes that run for a machine consumer.
+    exit_code = main(["export", str(artifact)])
+
+    # Then: the unchanged artifact schema is versioned and parseable.
+    captured = capsys.readouterr()
+    exported = captured.out.encode()
+    assert exit_code == 0
+    assert json.loads(exported)["schema"] == SCHEMA_VERSION
+    assert RunArtifact.from_bytes(exported).to_bytes() == exported
+    assert "source: replayed artifact" in captured.err
 
 
 def test_an_incomplete_collection_exits_two_after_printing_the_ranking(tmp_path, capsys) -> None:
@@ -349,13 +421,13 @@ def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     errors = io.StringIO()
     # When: an unauthenticated run stops for the exhausted quota.
-    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b""), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
     # Then: it gets the one actionable next step.
     assert "set GITHUB_TOKEN" in errors.getvalue()
 
     monkeypatch.setenv("GITHUB_TOKEN", "set")
     errors = io.StringIO()
-    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b""), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
     assert "set GITHUB_TOKEN" not in errors.getvalue()
 
 
