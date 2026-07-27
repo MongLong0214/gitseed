@@ -1,0 +1,10 @@
+{
+  "fixture/clean": {
+    "idea": 8,
+    "skill": 7,
+    "description": "small utility",
+    "model": "fixture",
+    "temperature": 0.0,
+    "prompt_version": "fixture-v1"
+  }
+}

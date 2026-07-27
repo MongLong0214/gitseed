@@ -1,0 +1,19 @@
+{
+  "complete": true,
+  "candidates": [
+    {
+      "full_name": "fixture/clean",
+      "html_url": "https://github.com/fixture/clean",
+      "stargazers_count": 8,
+      "pushed_at": "2026-07-27T00:00:00Z",
+      "files": "clean"
+    },
+    {
+      "full_name": "fixture/malicious",
+      "html_url": "https://github.com/fixture/malicious",
+      "stargazers_count": 1,
+      "pushed_at": "2026-07-27T00:00:00Z",
+      "files": "malicious"
+    }
+  ]
+}

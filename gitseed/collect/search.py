@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 from .ratelimit import RateLimit, classify, parse
 
@@ -48,10 +48,21 @@ class UrllibTransport:
         self.timeout = timeout
 
     def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        return self.request("GET", url)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        data: bytes | None = None,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
         headers = {"Accept": "application/vnd.github+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        request = urllib.request.Request(url, headers=headers)
+        if extra_headers:
+            headers.update(extra_headers)
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return response.status, dict(response.headers), response.read()
