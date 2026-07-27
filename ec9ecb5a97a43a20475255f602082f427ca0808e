@@ -1,0 +1,25 @@
+Ruled-out: an `approved: bool` parameter | a boolean can be passed by a caller
+  that never asked anybody, and the type system cannot tell the difference
+Ruled-out: a --non-interactive flag for CI | it would be switched on in CI, and
+  a CI that stars repositories is the automation the AUP forbids
+Ruled-out: requiring approval to undo | the person who mis-clicked has to be
+  able to take it back, and AUP constrains the direction that adds
+Warn: `Approval` proves a human answered, not that a human read. Nothing here
+  can establish that, and the prompt is stored so a reviewer can judge for
+  themselves
+Verified: 104 tests; five mutations (drop the approval parameter, drop the tty
+  check, drop rejections from the trailers, relax the timezone requirement,
+  approve in bulk without input) each kill at least one
+Verified: the rendered trailer block passes `commitlore validate`, which is how
+  the parser bug fixed in commitlore r-2e8f45 was found
+Unverified: no GitHub call has been made from this code — the writer is a
+  protocol satisfied by a recording fake in every test
+Evidence: docs/tickets/F4-review.md
+Evidence: gitseed/review/approval.py
+Evidence: gitseed/review/actions.py
+Blast: system
+Undo: easy
+Certainty: firm
+Record-Id: r-gs4a01
+Provenance: authored
+CommitLore-Version: 2.0.0
