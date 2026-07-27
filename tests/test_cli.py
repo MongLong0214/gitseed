@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import io
 import json
+from base64 import b64encode
 from pathlib import Path
 
 from gitseed import cli
-from gitseed.cli import main
+from gitseed.cli import (
+    SOURCE_FILE_BYTE_CAP,
+    SOURCE_FILE_COUNT_CAP,
+    SOURCE_TOTAL_BYTE_CAP,
+    GitHubClient,
+    main,
+)
 from gitseed.grade.types import GradeResult
+from gitseed.pipeline.run import FetchedFiles
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -107,11 +115,148 @@ class _NoWriteTransport:
 
 
 class _Grader:
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
     def evaluate(self, digest: str) -> GradeResult:
+        self.seen.append(digest)
         return GradeResult(idea=7, skill=6, description="d", model="test", temperature=0.0, prompt_version="v1")
 
     def flags_malicious(self, digest: str) -> bool:
         return False
+
+
+class _GitHubTransport:
+    def __init__(self, tree: list[dict[str, str | int]], blobs: dict[str, tuple[int, str]]) -> None:
+        self.tree = tree
+        self.blobs = blobs
+        self.urls: list[str] = []
+
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        self.urls.append(url)
+        if url.endswith("?recursive=1"):
+            return 200, {}, json.dumps({"tree": self.tree}).encode()
+        status, content = self.blobs[url]
+        return status, {}, json.dumps({"content": b64encode(content.encode()).decode()}).encode()
+
+
+def _tree_entry(path: str, size: int) -> dict[str, str | int]:
+    return {"type": "blob", "path": path, "size": size, "url": f"blob://{path}"}
+
+
+def test_github_fetches_only_allowed_source_files() -> None:
+    # Given: GitHub's listing mixes source with ungradeable binary and lock files.
+    transport = _GitHubTransport(
+        [_tree_entry("images/logo.png", 20), _tree_entry("poetry.lock", 20), _tree_entry("a.py", 20), _tree_entry("b.py", 20)],
+        {"blob://a.py": (200, "a = 1\n"), "blob://b.py": (200, "b = 2\n")},
+    )
+    # When: a candidate's source digest is collected.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    # Then: only the two source blobs were requested and retained.
+    assert [path for path, _ in fetched.files] == ["a.py", "b.py"]
+    assert transport.urls == [
+        "https://api.github.com/repos/org/repo/git/trees/HEAD?recursive=1",
+        "blob://a.py",
+        "blob://b.py",
+    ]
+
+
+def test_github_records_files_over_the_byte_cap_without_fetching_them() -> None:
+    # Given: a candidate contains one source file too large for a model digest.
+    transport = _GitHubTransport([_tree_entry("large.py", SOURCE_FILE_BYTE_CAP + 1)], {})
+    # When: source collection applies the listing's byte limit before blob reads.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    # Then: the skip is visible and no blob request happened.
+    assert fetched.files == ()
+    assert fetched.skipped == (f"large.py: exceeds {SOURCE_FILE_BYTE_CAP}-byte cap",)
+    assert len(transport.urls) == 1
+
+
+def test_github_enforces_file_count_and_total_byte_caps_before_blob_reads() -> None:
+    # Given: the listing is larger than both digest budgets.
+    count_entries = [_tree_entry(f"count-{index}.py", 1) for index in range(SOURCE_FILE_COUNT_CAP + 1)]
+    total_entries = [_tree_entry(f"total-{index}.py", SOURCE_FILE_BYTE_CAP) for index in range(6)]
+    count_transport = _GitHubTransport(count_entries, {str(entry["url"]): (200, "x\n") for entry in count_entries})
+    total_transport = _GitHubTransport(total_entries, {str(entry["url"]): (200, "x\n") for entry in total_entries})
+    # When: source collection selects blobs from the tree listing.
+    count_fetched = GitHubClient(count_transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    total_fetched = GitHubClient(total_transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    # Then: no more than either configured budget reaches GitHub's blob endpoint.
+    assert len(count_fetched.files) == SOURCE_FILE_COUNT_CAP
+    assert any("count cap" in skipped for skipped in count_fetched.skipped)
+    assert sum(SOURCE_FILE_BYTE_CAP for _ in total_fetched.files) <= SOURCE_TOTAL_BYTE_CAP
+    assert any("total-byte cap" in skipped for skipped in total_fetched.skipped)
+
+
+def test_github_skips_a_forbidden_blob_and_the_pipeline_still_grades_readable_source() -> None:
+    # Given: one selected source blob is forbidden while another remains readable.
+    transport = _GitHubTransport(
+        [_tree_entry("blocked.py", 1), _tree_entry("readable.py", 1)],
+        {"blob://blocked.py": (403, ""), "blob://readable.py": (200, "x = 1\n")},
+    )
+    grader = _Grader()
+    # When: the pipeline carries the partial source result into grading.
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=GitHubClient(transport).fetch_files,
+        grader=grader,
+    )
+    # Then: the readable source is graded and the failed blob is retained as incomplete evidence.
+    assert result.reviewed[0].grade is not None
+    assert "blocked.py: GitHub returned HTTP 403" in result.reviewed[0].skipped_files
+    assert result.complete is False
+
+
+def test_pipeline_withholds_a_candidate_when_every_file_was_skipped() -> None:
+    # Given: source selection deliberately yields no readable files.
+    grader = _Grader()
+    # When: the pipeline sees an empty, explained fetch result.
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=lambda _: FetchedFiles((), ("image.png: extension is not gradeable",)),
+        grader=grader,
+    )
+    # Then: the candidate is withheld rather than grading an empty digest.
+    assert result.reviewed[0].grade is None
+    assert "no readable source files" in (result.reviewed[0].withheld or "")
+    assert grader.seen == []
+
+
+def test_grade_timeout_defaults_to_a_32b_compatible_budget_and_accepts_an_override() -> None:
+    # Given: operators may need more or less time for their local model.
+    parser = cli._parser()
+    # When: they use the default or pass a specific timeout.
+    default = parser.parse_args(["run", "--query", "example"])
+    override = parser.parse_args(["run", "--query", "example", "--grade-timeout", "240"])
+    # Then: the default is practical and the CLI preserves an explicit value.
+    assert default.grade_timeout == 120
+    assert override.grade_timeout == 240
+
+
+def test_grade_timeout_is_passed_to_the_ollama_transport(monkeypatch) -> None:
+    # Given: the command uses injected collection and source seams but its normal local grader.
+    constructed: list[int] = []
+
+    class OllamaTransport:
+        def __init__(self, token=None, timeout=30) -> None:
+            constructed.append(timeout)
+
+        def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+            return 200, {}, json.dumps({"models": [{"name": "qwen2.5-coder:32b"}]}).encode()
+
+        def request(self, method: str, url: str, data=None, extra_headers=None) -> tuple[int, dict[str, str], bytes]:
+            return 200, {}, json.dumps({"response": json.dumps({"idea": 7, "skill": 6, "description": "d"})}).encode()
+
+    monkeypatch.setattr(cli, "UrllibTransport", OllamaTransport)
+    # When: the operator changes the grade timeout.
+    exit_code = main(
+        ["run", "--query", "example", "--grade-timeout", "240"],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+    )
+    # Then: only the model transport receives that configured timeout.
+    assert exit_code == 0
+    assert constructed == [240]
 
 
 def test_dry_run_never_asks_for_approval_or_constructs_a_live_transport(capsys) -> None:

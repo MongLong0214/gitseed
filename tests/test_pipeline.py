@@ -136,6 +136,21 @@ def test_a_failing_grader_is_recorded_against_that_candidate_only() -> None:
     assert next(e for e in result.reviewed if e.candidate.repo == "a/one").grade is not None
 
 
+def test_a_grading_timeout_is_reported_and_makes_the_run_incomplete() -> None:
+    # Given: the local model exceeds its configured request deadline.
+    result = run(
+        CollectResult(candidates=[candidate("a/slow")]),
+        fetch_files=files_for({"a/slow": CLEAN}),
+        grader=Grader(raises=TimeoutError("timed out")),
+    )
+    # When: the pipeline handles that model failure.
+    entry = result.reviewed[0]
+    # Then: the candidate and the run both retain the timeout failure.
+    assert result.complete is False
+    assert "grading failed (timed out)" in " ".join(result.incomplete_because)
+    assert entry.grade is None and entry.withheld == "grading failed: timed out"
+
+
 # --- screening decides before a model is ever asked ---------------------------
 
 

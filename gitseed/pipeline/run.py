@@ -33,6 +33,7 @@ class Reviewed:
     grade: GradeResult | None
     #: Why this candidate never reached grading. `None` means it did.
     withheld: str | None = None
+    skipped_files: tuple[str, ...] = ()
 
     @property
     def score(self) -> int | None:
@@ -67,10 +68,17 @@ class PipelineResult:
 BLOCKING_SEVERITY = "high"
 
 
+@dataclass(frozen=True)
+class FetchedFiles:
+    files: tuple[tuple[str, str], ...]
+    skipped: tuple[str, ...] = ()
+    complete: bool = True
+
+
 def run(
     collected: CollectResult,
     *,
-    fetch_files: Callable[[Candidate], Sequence[tuple[str, str]]],
+    fetch_files: Callable[[Candidate], FetchedFiles | Sequence[tuple[str, str]]],
     grader: GradeClient,
 ) -> PipelineResult:
     """Carry `collected` through screening and grading.
@@ -89,7 +97,7 @@ def run(
 
     for candidate in collected.candidates:
         try:
-            files = fetch_files(candidate)
+            fetched = fetch_files(candidate)
         except Exception as error:  # noqa: BLE001 — one repository, not the run
             result.mark_incomplete(f"{candidate.repo}: could not read files ({error})")
             result.reviewed.append(
@@ -99,6 +107,34 @@ def run(
                     severity="unknown",
                     grade=None,
                     withheld="files could not be read, so nothing was screened",
+                )
+            )
+            continue
+
+        if isinstance(fetched, FetchedFiles):
+            files = fetched.files
+            skipped = fetched.skipped
+            source_complete = fetched.complete
+        else:
+            files = fetched
+            skipped = ()
+            source_complete = True
+
+        if not source_complete:
+            result.mark_incomplete(f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
+
+        if not files:
+            reason = "no readable source files"
+            if skipped:
+                reason += f" ({'; '.join(skipped)})"
+            result.reviewed.append(
+                Reviewed(
+                    candidate=candidate,
+                    signals=[],
+                    severity="unknown",
+                    grade=None,
+                    withheld=reason,
+                    skipped_files=skipped,
                 )
             )
             continue
@@ -114,6 +150,7 @@ def run(
                     severity=severity,
                     grade=None,
                     withheld=f"screening found {len(signals)} signal(s) at severity {severity}",
+                    skipped_files=skipped,
                 )
             )
             continue
@@ -129,12 +166,13 @@ def run(
                     severity=severity,
                     grade=None,
                     withheld=f"grading failed: {error}",
+                    skipped_files=skipped,
                 )
             )
             continue
 
         result.reviewed.append(
-            Reviewed(candidate=candidate, signals=signals, severity=severity, grade=grade)
+            Reviewed(candidate=candidate, signals=signals, severity=severity, grade=grade, skipped_files=skipped)
         )
 
     return result

@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
-from .pipeline.run import Reviewed, ranked, run
+from .pipeline.run import FetchedFiles, Reviewed, ranked, run
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.trailers import render_block
@@ -26,12 +26,26 @@ PREFERRED_OLLAMA_MODELS: Final = (
     "qwen2.5-coder:1.5b",
 )
 OLLAMA_TAGS_URL: Final = "http://localhost:11434/api/tags"
+# A cold one-token reply from the local 32B model took about 23 seconds; a
+# multi-file digest needs several times that budget instead of the old 30-second default.
+DEFAULT_GRADE_TIMEOUT: Final = 120
+SOURCE_FILE_BYTE_CAP: Final = 100_000
+SOURCE_TOTAL_BYTE_CAP: Final = 500_000
+SOURCE_FILE_COUNT_CAP: Final = 20
+SOURCE_EXTENSIONS: Final = frozenset(
+    {
+        ".asm", ".bash", ".c", ".cc", ".clj", ".cljs", ".cpp", ".cs", ".css", ".cxx", ".dart", ".ex", ".exs",
+        ".fs", ".fsx", ".go", ".groovy", ".h", ".hpp", ".hrl", ".html", ".java", ".js", ".jsx", ".kt", ".kts",
+        ".lua", ".m", ".mjs", ".php", ".pl", ".pm", ".py", ".pyi", ".r", ".rb", ".rs", ".scala", ".sh", ".sql",
+        ".swift", ".ts", ".tsx", ".vue", ".zsh",
+    }
+)
 
 
 class FetchFiles(Protocol):
     """The read-only repository content seam used by the pipeline."""
 
-    def __call__(self, candidate: Candidate) -> Sequence[tuple[str, str]]: ...
+    def __call__(self, candidate: Candidate) -> FetchedFiles: ...
 
 
 class Grader(Protocol):
@@ -91,9 +105,9 @@ class FixtureTransport:
         start = (page - 1) * per_page
         return 200, {"X-RateLimit-Remaining": "29"}, json.dumps({"items": self.items[start:start + per_page]}).encode()
 
-    def fetch_files(self, candidate: Candidate) -> Sequence[tuple[str, str]]:
+    def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         root = self.directory / self._files[candidate.repo]
-        return [(str(path.relative_to(root)), path.read_text()) for path in sorted(root.rglob("*")) if path.is_file()]
+        return FetchedFiles(tuple((str(path.relative_to(root)), path.read_text()) for path in sorted(root.rglob("*")) if path.is_file()))
 
     def star(self, repo: str) -> None:
         self.calls.append(("star", repo))
@@ -128,24 +142,45 @@ class GitHubClient:
     def __init__(self, transport: UrllibTransport) -> None:
         self.transport = transport
 
-    def fetch_files(self, candidate: Candidate) -> Sequence[tuple[str, str]]:
+    def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         repo = quote(candidate.repo, safe="/")
         status, _, body = self.transport.get(f"https://api.github.com/repos/{repo}/git/trees/HEAD?recursive=1")
         if status != 200:
             raise RuntimeError(f"GitHub returned HTTP {status} for {candidate.repo}")
         tree = json.loads(body).get("tree", [])
-        files: list[tuple[str, str]] = []
+        selected: list[tuple[str, str]] = []
+        skipped: list[str] = []
+        total_bytes = 0
+        # An allow-list fails closed for new binary formats; a deny-list would repeat
+        # the injection-scanner mistake where the next unknown format slips through.
         for entry in tree:
-            if entry.get("type") != "blob" or int(entry.get("size", 0)) > 100_000:
+            if entry.get("type") != "blob":
                 continue
-            blob_status, _, blob_body = self.transport.get(str(entry["url"]))
+            path = str(entry["path"])
+            size = int(entry.get("size", 0))
+            if path.endswith((".min.js", ".min.css")) or Path(path).suffix.lower() not in SOURCE_EXTENSIONS:
+                skipped.append(f"{path}: extension is not gradeable")
+            elif size > SOURCE_FILE_BYTE_CAP:
+                skipped.append(f"{path}: exceeds {SOURCE_FILE_BYTE_CAP}-byte cap")
+            elif len(selected) == SOURCE_FILE_COUNT_CAP:
+                skipped.append(f"{path}: exceeds {SOURCE_FILE_COUNT_CAP}-file count cap")
+            elif total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
+                skipped.append(f"{path}: exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap")
+            else:
+                selected.append((path, str(entry["url"])))
+                total_bytes += size
+
+        files: list[tuple[str, str]] = []
+        complete = True
+        for path, url in selected:
+            blob_status, _, blob_body = self.transport.get(url)
             if blob_status != 200:
-                raise RuntimeError(f"GitHub returned HTTP {blob_status} for {entry['path']}")
+                skipped.append(f"{path}: GitHub returned HTTP {blob_status}")
+                complete = False
+                continue
             blob = json.loads(blob_body)
-            files.append((str(entry["path"]), base64.b64decode(blob["content"]).decode(errors="replace")))
-            if len(files) == 20:
-                break
-        return files
+            files.append((path, base64.b64decode(blob["content"]).decode(errors="replace")))
+        return FetchedFiles(tuple(files), tuple(skipped), complete)
 
     def star(self, repo: str) -> None:
         self._write("PUT", f"https://api.github.com/user/starred/{quote(repo, safe='/')}")
@@ -207,6 +242,7 @@ def _parser() -> argparse.ArgumentParser:
     command = commands.add_parser("run")
     command.add_argument("--query", required=True, help="GitHub repository search query")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
+    command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
     # A default write turns an accidental invocation into an external side effect.
     command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     command.add_argument("--approve-all", action="store_true")
@@ -277,6 +313,8 @@ def main(
         return 1
     if args.limit < 1:
         _parser().error("--limit must be positive")
+    if args.grade_timeout < 1:
+        _parser().error("--grade-timeout must be positive")
 
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
@@ -290,7 +328,7 @@ def main(
     elif grader is not None:
         active_grader = grader
     else:
-        ollama_transport = UrllibTransport()
+        ollama_transport = UrllibTransport(timeout=args.grade_timeout)
         model, reason = resolve_model(ollama_transport)
         err.write(f"grading model: {model} ({reason})\n")
         active_grader = OllamaGrader(model, ollama_transport)
