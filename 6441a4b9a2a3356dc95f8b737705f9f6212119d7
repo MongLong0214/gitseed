@@ -1,0 +1,19 @@
+Ruled-out: monkeypatching `isatty` or injecting a fake stream | it would test a
+  different program than the one that ships, which is how this pair of projects
+  has been burned repeatedly this week
+Ruled-out: skipping quietly when the CommitLore validator is absent | a skip that
+  reads as a pass is the defect this project keeps finding elsewhere. It reports
+  the reason
+Warn: a third fixture candidate was added so "quit before the remaining ones" is a
+  real branch rather than a no-op. Fixture counts in other tests move with it
+Verified: 151 tests, up from 147. Removing the tty guard fails 5 of them,
+  re-checked here after the delegate reported it
+Verified: no network call and no live star or follow in any test
+Evidence: tests/test_review_cycle.py
+Follows: r-gse411
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gsf512
+Provenance: authored
+CommitLore-Version: 2.0.0
