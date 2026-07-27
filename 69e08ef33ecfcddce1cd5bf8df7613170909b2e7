@@ -1,0 +1,17 @@
+Ruled-out: a benchmark section, adoption numbers, a comparison table | none could
+  be sourced from a command, and the sibling project spent today withdrawing
+  published numbers it could not prove
+Ruled-out: claiming the factory's phase gate runs here | `phase-gate.py` lives in
+  the operator's home directory and is in neither this checkout nor its history.
+  The delegate noticed and cut the claim rather than writing something plausible
+Verified: the quick-start command in the README exits 0 with no network and no
+  token; the hero SVG is committed beside it
+Evidence: README.md
+Evidence: assets/readme/hero.svg
+Follows: r-gsd310
+Blast: local
+Undo: easy
+Certainty: firm
+Record-Id: r-gse411
+Provenance: authored
+CommitLore-Version: 2.0.0
