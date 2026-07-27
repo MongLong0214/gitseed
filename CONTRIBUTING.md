@@ -31,7 +31,7 @@ COMMITLORE=/absolute/path/to/commitlore/dist/commitlore.mjs
 git config commitlore.bin "$COMMITLORE"
 node "$COMMITLORE" hooks install
 node "$COMMITLORE" inject install-claude-hook \
-  --command "node $COMMITLORE inject --hook-input # commitlore-inject-hook"
+  --command "node \"$COMMITLORE\" inject --hook-input # commitlore-inject-hook"
 ```
 
 `dist/cli.js` is a development entry point that requires `node_modules`; use
