@@ -1,3 +1,4 @@
+> The historic Phase 0 unattended-action assumption discussed below is superseded by [ADR-0006](adr/ADR-0006-no-unattended-external-writes.md).
 # Phase 1 — Evidence collection (reproduction experiments first)
 
 Invariant 1: no claims without evidence. Reproduce defects and take numbers only from run logs.

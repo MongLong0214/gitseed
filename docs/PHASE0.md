@@ -1,3 +1,4 @@
+> Superseded by [ADR-0006](adr/ADR-0006-no-unattended-external-writes.md); retained unchanged as the historical record.
 # Phase 0 — Seed intake (owner answers, 2026-07-26)
 
 > This file is the output of the owner gate. Because the work spans 10 days, keep it on
