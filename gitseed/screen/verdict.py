@@ -10,15 +10,25 @@ from __future__ import annotations
 
 from typing import Final, Sequence
 
+from ..evidence import ClaimBasis
 from .signals import HIGH, LOW, Signal
 
 NONE: Final = "none"
 
 
+def findings(signals: Sequence[Signal]) -> tuple[Signal, ...]:
+    return tuple(signal for signal in signals if signal.basis is ClaimBasis.DETERMINISTIC)
+
+
+def unverified(signals: Sequence[Signal]) -> tuple[Signal, ...]:
+    return tuple(signal for signal in signals if signal.basis is ClaimBasis.MODEL)
+
+
 def severity_of(signals: Sequence[Signal]) -> str:
     """`high` if anything is high, else `low` if anything is low, else `none`."""
-    if any(signal.severity == HIGH for signal in signals):
+    deterministic = findings(signals)
+    if any(signal.severity == HIGH for signal in deterministic):
         return HIGH
-    if any(signal.severity == LOW for signal in signals):
+    if any(signal.severity == LOW for signal in deterministic):
         return LOW
     return NONE

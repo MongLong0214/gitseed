@@ -18,9 +18,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 from ..collect.search import Candidate, CollectResult
+from ..evidence import ClaimBasis
 from ..grade.types import GradeClient, GradeResult
 from ..screen.signals import Signal, scan_files
-from ..screen.verdict import severity_of
+from ..screen.verdict import findings, severity_of, unverified
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,16 @@ class Reviewed:
     #: Why this candidate never reached grading. `None` means it did.
     withheld: str | None = None
     skipped_files: tuple[str, ...] = ()
+    screening_basis: ClaimBasis = ClaimBasis.ABSENT
+    screened_files: tuple[str, ...] = ()
+
+    @property
+    def findings(self) -> tuple[Signal, ...]:
+        return findings(self.signals)
+
+    @property
+    def unverified(self) -> tuple[Signal, ...]:
+        return unverified(self.signals)
 
     @property
     def score(self) -> int | None:
@@ -169,6 +180,7 @@ def run(
 
         signals = scan_files(files)
         severity = severity_of(signals)
+        screened_files = tuple(path for path, _ in files)
 
         if severity == BLOCKING_SEVERITY:
             result.reviewed.append(
@@ -179,6 +191,8 @@ def run(
                     grade=None,
                     withheld=f"screening found {len(signals)} signal(s) at severity {severity}",
                     skipped_files=skipped,
+                    screening_basis=ClaimBasis.DETERMINISTIC,
+                    screened_files=screened_files,
                 )
             )
             continue
@@ -195,12 +209,22 @@ def run(
                     grade=None,
                     withheld=f"grading failed: {error}",
                     skipped_files=skipped,
+                    screening_basis=ClaimBasis.DETERMINISTIC,
+                    screened_files=screened_files,
                 )
             )
             continue
 
         result.reviewed.append(
-            Reviewed(candidate=candidate, signals=signals, severity=severity, grade=grade, skipped_files=skipped)
+            Reviewed(
+                candidate=candidate,
+                signals=signals,
+                severity=severity,
+                grade=grade,
+                skipped_files=skipped,
+                screening_basis=ClaimBasis.DETERMINISTIC,
+                screened_files=screened_files,
+            )
         )
 
     return result
