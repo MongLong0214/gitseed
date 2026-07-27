@@ -3,7 +3,7 @@ name = "gitseed"
 version = "0.1.0.dev0"
 description = "Triage GitHub repositories with a local model you have actually verified."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = []
 
