@@ -1,0 +1,25 @@
+Ruled-out: 무인 자동 스타·팔로우 유지 | GitHub AUP "rank abuse" 위반이고 오너 계정
+  정지 위험이다. ToS 를 어기는 도구를 엔터프라이즈 레벨이라 부를 수 없다
+Ruled-out: 하루 N개로 제한해 탐지를 피하기 | 조문에 수량 기준이 없어 위반은 그대로고,
+  ICSE 2026 StarScout 은 계정 행동 패턴으로 잡으므로 저volume 이 오히려 선명하다
+Ruled-out: 씨앗 코드 재사용 | 아이디어만 계승한다. 파이프라인 형태가 달라져 공유할
+  구조가 없고 씨앗에 라이선스도 없다
+Ruled-out: 저장소 전체 clone 후 다이제스트 | 디스크·시간·악성코드 실행 위험을 내는데
+  API 메타데이터로 대부분의 신호를 얻는다
+Limit: GitHub AUP 가 자동 스타·팔로우를 금지하므로 외부 행동은 사람 승인 뒤에만
+  발생한다. 이것은 기능이 아니라 경계다
+Warn: 모델을 계약 검증 없이 신뢰하지 마라 — 작은 모델은 조용히 실패하지 않고 자신
+  있게 틀린다. 기동 시 스모크 테스트가 F3 의 전제 조건이다
+Verified: PyPI·GitHub 양쪽에서 gradelore 미선점 실측 (둘 다 404)
+Verified: repoassay 는 2026-07-24 생성된 동일 도메인 Organization 이 있어 기각
+Verified: 씨앗 채점 결정성 7b n=10 · 1.5b n=22 — idea·skill 모두 sd=0.000
+Verified: 씨앗 보안 오탐 1.5b 9/14, 7b 0/14, 32b 0/14
+Unverified: 32b 채점 결정성 — 보안 판정만 측정했고 점수 분산은 재지 않았다
+Evidence: docs/PHASE1-EVIDENCE.md
+Evidence: docs/adr/ADR-0001-identity.md
+Blast: system
+Undo: easy
+Certainty: firm
+Record-Id: r-gl0001
+Provenance: authored
+CommitLore-Version: 2.0.0
