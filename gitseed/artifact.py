@@ -6,13 +6,14 @@ from datetime import datetime
 from decimal import Decimal
 
 from .collect.search import Candidate, CollectResult
+from .evidence import ClaimBasis
 from .grade.types import GradeResult
 from .pipeline.run import FetchedFiles, PipelineResult, Reviewed
 from .ports import RepositoryMetadata, RunRequest
 from .scoring import Feature, Recommendation, Score, ScoreInputs
 from .screen.signals import Signal
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -178,6 +179,8 @@ def _result_from_dict(payload: dict) -> PipelineResult:
                 grade=_grade_from_dict(entry["grade"]),
                 withheld=entry["withheld"],
                 skipped_files=tuple(entry["skipped_files"]),
+                screening_basis=ClaimBasis(entry["screening_basis"]),
+                screened_files=tuple(entry["screened_files"]),
             )
         )
     return PipelineResult(
@@ -196,6 +199,7 @@ def _scored_to_dict(scored: ScoredCandidate):
             "value": str(score.value),
             "version": score.version,
             "coverage": sorted(feature.value for feature in score.coverage),
+            "basis": score.basis.value,
         },
         "risk_verdict": scored.recommendation.risk_verdict,
     }

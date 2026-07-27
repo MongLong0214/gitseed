@@ -5,6 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Final
 
+from .evidence import ClaimBasis
 from .screen.signals import HIGH
 
 
@@ -47,6 +48,10 @@ class Score:
     value: Decimal
     version: str
     coverage: frozenset[Feature]
+
+    @property
+    def basis(self) -> ClaimBasis:
+        return ClaimBasis.DETERMINISTIC if self.coverage else ClaimBasis.ABSENT
 
     @property
     def complete(self) -> bool:

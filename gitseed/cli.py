@@ -424,7 +424,8 @@ def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> i
 def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     trace = next((trace for trace in artifact.repositories if trace.candidate.repo == repo), None)
     recommendation = next((scored.recommendation for scored in artifact.scores if scored.repo == repo), None)
-    if trace is None or recommendation is None:
+    reviewed = next((entry for entry in artifact.result.reviewed if entry.candidate.repo == repo), None)
+    if trace is None or recommendation is None or reviewed is None:
         return False
     score = recommendation.score
     values = None if trace.metadata is None else trace.metadata.score_inputs
@@ -435,7 +436,14 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
         contribution = "unavailable" if value is None else str(weight if value else 0)
         out.write(f"{feature.value}: {contribution}\n")
     unavailable = ", ".join(reason.removesuffix(" unavailable") for reason in score.incomplete_because)
+    out.write(f"score coverage: {len(score.coverage)}/{len(WEIGHTS)}\n")
     out.write(f"unavailable features: {unavailable or 'none'}\n")
+    screened = ", ".join(reviewed.screened_files) or "0 files"
+    out.write(f"security coverage: {reviewed.screening_basis.value} ({screened})\n")
+    findings = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.findings)
+    unverified = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.unverified)
+    out.write(f"security findings: {findings or 'none'}\n")
+    out.write(f"unverified security claims: {unverified or 'none'}\n")
     out.write(f"risk: {recommendation.risk_verdict}\n")
     out.write(f"recommendation: {'review' if recommendation.recommended else 'not recommended'}\n")
     return True

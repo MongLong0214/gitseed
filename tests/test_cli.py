@@ -8,6 +8,7 @@ from base64 import b64encode
 from pathlib import Path
 
 from gitseed import cli
+from gitseed.application import execute
 from gitseed.artifact import RunArtifact, SCHEMA_VERSION
 from gitseed.cli import (
     SOURCE_FILE_BYTE_CAP,
@@ -18,6 +19,9 @@ from gitseed.cli import (
 )
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
+from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
+from gitseed.collect.search import Candidate, CollectResult
+from gitseed.scoring import ScoreInputs
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -159,6 +163,89 @@ def test_explain_names_unavailable_features_and_weight_version(tmp_path, capsys)
     assert "weight set: m0-contributions-v1" in captured.out
     assert "unavailable features: commit_cadence_30d, contributor_count, has_license" in captured.out
     assert "source: replayed artifact" in captured.err
+
+
+def test_coverage_reaches_explain_and_export(tmp_path, capsys) -> None:
+    # Given: the fixture has readable source but unavailable score metadata.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: a human explains it and a program exports it.
+    assert main(["explain", "fixture/clean", "--artifact", str(artifact)]) == 0
+    explained = capsys.readouterr()
+    assert main(["export", str(artifact)]) == 0
+    exported = json.loads(capsys.readouterr().out)
+
+    # Then: both surfaces retain score and security evidence coverage.
+    assert "score coverage: 0/3" in explained.out
+    assert "security coverage: deterministic (a_logger.py" in explained.out
+    score = exported["output"]["scores"][0]["score"]
+    reviewed = exported["output"]["result"]["reviewed"][0]
+    assert score["basis"] == "absent"
+    assert score["coverage"] == []
+    assert reviewed["screening_basis"] == "deterministic"
+    assert reviewed["screened_files"] == [
+        "a_logger.py",
+        "b_setup.sh",
+        "c_package.json",
+        "d_client.py",
+        "e_hash.py",
+        "f_config.py",
+        "g_readme.md",
+        "h_docker.sh",
+        "i_key.py",
+        "j_ci.yml",
+    ]
+
+
+def test_every_failed_read_reports_zero_coverage_not_a_clean_run(tmp_path, capsys) -> None:
+    # Given: collection succeeds but the sole repository's source read fails.
+    candidate = Candidate("org/unreadable", "org", "", 0, "")
+
+    class Repository:
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[candidate])
+
+        def metadata(self, item: Candidate, at) -> RepositoryMetadata:
+            return RepositoryMetadata(ScoreInputs(True, True, True))
+
+    class Files:
+        def read(self, item: Candidate) -> FetchedFiles:
+            raise OSError("offline")
+
+    class Clock:
+        def now(self):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 27, tzinfo=timezone.utc)
+
+    artifact = tmp_path / "failed-reads.json"
+    artifact.write_bytes(execute(RunRequest("example", 1), RunPorts(Repository(), Files(), _Grader(), Clock())).to_bytes())
+
+    # When: an operator explains the recorded run.
+    exit_code = main(["explain", "org/unreadable", "--artifact", str(artifact)])
+
+    # Then: no finding is never rendered as clean when coverage is absent.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == (
+        "Score measures small-versus-medium size; it does not predict that a repository will take off.\n"
+        "repository: org/unreadable\n"
+        "weight set: m0-contributions-v1\n"
+        "score: 0.119096\n"
+        "commit_cadence_30d: 0.093318\n"
+        "contributor_count: 0.016129\n"
+        "has_license: 0.009649\n"
+        "score coverage: 3/3\n"
+        "unavailable features: none\n"
+        "security coverage: absent (0 files)\n"
+        "security findings: none\n"
+        "unverified security claims: none\n"
+        "risk: unknown\n"
+        "recommendation: review\n"
+    )
+    assert "org/unreadable: could not read files (offline)\n" in captured.err
 
 
 def test_export_writes_the_canonical_versioned_artifact_and_round_trips(tmp_path, capsys) -> None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..evidence import ClaimBasis
+
 
 @dataclass(frozen=True)
 class GradeResult:
@@ -22,8 +24,10 @@ class GradeResult:
     model: str
     temperature: float
     prompt_version: str
+    basis: ClaimBasis = ClaimBasis.MODEL
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "basis", ClaimBasis(self.basis))
         for name, value in (("idea", self.idea), ("skill", self.skill)):
             if not 1 <= value <= 10:
                 raise ValueError(f"GradeResult.{name} must be 1..10, got {value}")
