@@ -56,10 +56,12 @@ class PipelineResult:
     complete: bool = True
     #: One line per stage that stopped early, in the order they happened.
     incomplete_because: list[str] = field(default_factory=list)
+    rate_limited: bool = False
 
     def mark_incomplete(self, why: str) -> None:
         self.complete = False
-        self.incomplete_because.append(why)
+        if why not in self.incomplete_because:
+            self.incomplete_because.append(why)
 
 
 #: `high` never reaches a model. Sending a repository that scans as malicious to
@@ -73,6 +75,18 @@ class FetchedFiles:
     files: tuple[tuple[str, str], ...]
     skipped: tuple[str, ...] = ()
     complete: bool = True
+    incomplete_because: str | None = None
+    rate_limited: bool = False
+
+
+@dataclass(frozen=True)
+class FileFetchError(RuntimeError):
+    detail: str
+    run_reason: str | None = None
+    rate_limited: bool = False
+
+    def __str__(self) -> str:
+        return self.detail
 
 
 def run(
@@ -98,6 +112,19 @@ def run(
     for candidate in collected.candidates:
         try:
             fetched = fetch_files(candidate)
+        except FileFetchError as error:
+            result.mark_incomplete(error.run_reason or f"{candidate.repo}: could not read files ({error})")
+            result.rate_limited = result.rate_limited or error.rate_limited
+            result.reviewed.append(
+                Reviewed(
+                    candidate=candidate,
+                    signals=[],
+                    severity="unknown",
+                    grade=None,
+                    withheld=f"files could not be read ({error})",
+                )
+            )
+            continue
         except Exception as error:  # noqa: BLE001 — one repository, not the run
             result.mark_incomplete(f"{candidate.repo}: could not read files ({error})")
             result.reviewed.append(
@@ -121,7 +148,8 @@ def run(
             source_complete = True
 
         if not source_complete:
-            result.mark_incomplete(f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
+            result.mark_incomplete(fetched.incomplete_because or f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
+            result.rate_limited = result.rate_limited or fetched.rate_limited
 
         if not files:
             reason = "no readable source files"

@@ -169,17 +169,37 @@ class _Grader:
 
 
 class _GitHubTransport:
-    def __init__(self, tree: list[dict[str, str | int]], blobs: dict[str, tuple[int, str]]) -> None:
+    def __init__(
+        self,
+        tree: list[dict[str, str | int]],
+        blobs: dict[str, tuple[int, str]],
+        *,
+        tree_response: tuple[int, dict[str, str]] | None = None,
+        blob_headers: dict[str, dict[str, str]] | None = None,
+    ) -> None:
         self.tree = tree
         self.blobs = blobs
+        self.tree_response = tree_response
+        self.blob_headers = {} if blob_headers is None else blob_headers
         self.urls: list[str] = []
 
     def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
         self.urls.append(url)
         if url.endswith("?recursive=1"):
+            if self.tree_response is not None:
+                status, headers = self.tree_response
+                return status, headers, b""
             return 200, {}, json.dumps({"tree": self.tree}).encode()
         status, content = self.blobs[url]
-        return status, {}, json.dumps({"content": b64encode(content.encode()).decode()}).encode()
+        return status, self.blob_headers.get(url, {}), json.dumps({"content": b64encode(content.encode()).decode()}).encode()
+
+
+class _ScriptedTransport:
+    def __init__(self, responses: list[tuple[int, dict[str, str], bytes]]) -> None:
+        self.responses = responses
+
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        return self.responses.pop(0)
 
 
 def _tree_entry(path: str, size: int) -> dict[str, str | int]:
@@ -245,8 +265,72 @@ def test_github_skips_a_forbidden_blob_and_the_pipeline_still_grades_readable_so
     )
     # Then: the readable source is graded and the failed blob is retained as incomplete evidence.
     assert result.reviewed[0].grade is not None
-    assert "blocked.py: GitHub returned HTTP 403" in result.reviewed[0].skipped_files
+    assert "blocked.py: GitHub access is forbidden; waiting will not help" in result.reviewed[0].skipped_files
     assert result.complete is False
+
+
+def test_github_names_an_exhausted_quota_and_reports_it_once_for_the_run() -> None:
+    # Given: two repositories reach GitHub after the same exhausted quota response.
+    headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "2000000000"}
+
+    def exhausted(candidate: cli.Candidate) -> FetchedFiles:
+        transport = _GitHubTransport([], {}, tree_response=(403, headers))
+        return GitHubClient(transport).fetch_files(candidate)
+
+    # When: the pipeline keeps both candidates visible.
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/one", "org", "", 0, ""), cli.Candidate("org/two", "org", "", 0, "")]),
+        fetch_files=exhausted,
+        grader=_Grader(),
+    )
+    # Then: each withheld record is actionable, while the run-level cause is not repeated.
+    assert all("rate limit exhausted" in (entry.withheld or "") for entry in result.reviewed)
+    assert "2033-05-18" in result.incomplete_because[0]
+    assert result.incomplete_because == [result.incomplete_because[0]]
+
+
+def test_github_names_secondary_limiting_for_a_retry_after_response() -> None:
+    # Given: GitHub asks the blob reader to wait before retrying.
+    transport = _GitHubTransport(
+        [_tree_entry("blocked.py", 1)],
+        {"blob://blocked.py": (403, "")},
+        blob_headers={"blob://blocked.py": {"Retry-After": "60"}},
+    )
+    # When: the file fetch receives that response.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    # Then: the skipped-file reason identifies a waitable secondary limit.
+    assert "secondary rate limit" in fetched.skipped[0]
+    assert "retry at" in fetched.skipped[0]
+
+
+def test_github_names_forbidden_access_as_not_waitable() -> None:
+    # Given: GitHub refuses a tree request without any rate-limit signal.
+    transport = _GitHubTransport([], {}, tree_response=(403, {}))
+    # When: the candidate reaches file collection.
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=GitHubClient(transport).fetch_files,
+        grader=_Grader(),
+    )
+    # Then: the withheld reason does not suggest a futile wait.
+    assert "waiting will not help" in (result.reviewed[0].withheld or "")
+
+
+def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -> None:
+    # Given: search succeeds but source collection reaches an exhausted quota.
+    response = json.dumps({"items": [{"full_name": "org/repo", "html_url": "https://github.com/org/repo"}]}).encode()
+    headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "2000000000"}
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    errors = io.StringIO()
+    # When: an unauthenticated run stops for the exhausted quota.
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    # Then: it gets the one actionable next step.
+    assert "set GITHUB_TOKEN" in errors.getvalue()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "set")
+    errors = io.StringIO()
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert "set GITHUB_TOKEN" not in errors.getvalue()
 
 
 def test_pipeline_withholds_a_candidate_when_every_file_was_skipped() -> None:

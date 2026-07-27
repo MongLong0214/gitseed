@@ -9,13 +9,15 @@ import os
 import sys
 import traceback
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
+from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
-from .pipeline.run import FetchedFiles, Reviewed, ranked, run
+from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.trailers import render_block
@@ -145,9 +147,9 @@ class GitHubClient:
 
     def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         repo = quote(candidate.repo, safe="/")
-        status, _, body = self.transport.get(f"https://api.github.com/repos/{repo}/git/trees/HEAD?recursive=1")
-        if status != 200:
-            raise RuntimeError(f"GitHub returned HTTP {status} for {candidate.repo}")
+        status, headers, body = self.transport.get(f"https://api.github.com/repos/{repo}/git/trees/HEAD?recursive=1")
+        if error := _github_response_error(status, headers):
+            raise error
         tree = json.loads(body).get("tree", [])
         selected: list[tuple[str, str]] = []
         skipped: list[str] = []
@@ -173,15 +175,19 @@ class GitHubClient:
 
         files: list[tuple[str, str]] = []
         complete = True
+        incomplete_because: str | None = None
+        rate_limited = False
         for path, url in selected:
-            blob_status, _, blob_body = self.transport.get(url)
-            if blob_status != 200:
-                skipped.append(f"{path}: GitHub returned HTTP {blob_status}")
+            blob_status, blob_headers, blob_body = self.transport.get(url)
+            if error := _github_response_error(blob_status, blob_headers):
+                skipped.append(f"{path}: {error}")
                 complete = False
+                incomplete_because = incomplete_because or error.run_reason
+                rate_limited = rate_limited or error.rate_limited
                 continue
             blob = json.loads(blob_body)
             files.append((path, base64.b64decode(blob["content"]).decode(errors="replace")))
-        return FetchedFiles(tuple(files), tuple(skipped), complete)
+        return FetchedFiles(tuple(files), tuple(skipped), complete, incomplete_because, rate_limited)
 
     def star(self, repo: str) -> None:
         self._write("PUT", f"https://api.github.com/user/starred/{quote(repo, safe='/')}")
@@ -199,6 +205,37 @@ class GitHubClient:
         status, _, _ = self.transport.request(method, url, data=b"")
         if status not in (200, 204):
             raise RuntimeError(f"GitHub returned HTTP {status} for {method} {url}")
+
+
+def _github_response_error(status: int, headers: Mapping[str, str]) -> FileFetchError | None:
+    kind = classify(status, headers)
+    if kind == "ok":
+        return None
+    if kind == "forbidden":
+        return FileFetchError("GitHub access is forbidden; waiting will not help")
+    if kind == "rate-limited":
+        lowered = {key.lower(): value for key, value in headers.items()}
+        retry_after = lowered.get("retry-after")
+        if retry_after is not None:
+            try:
+                retry_at = datetime.now(timezone.utc) + timedelta(seconds=int(retry_after))
+            except ValueError:
+                return FileFetchError("GitHub secondary rate limit; wait before retrying", "GitHub secondary rate limit", True)
+            reason = f"GitHub secondary rate limit; retry at {_wall_clock(retry_at)}"
+            return FileFetchError(reason, reason, True)
+        limit = parse(headers)
+        if limit.exhausted:
+            reset = ""
+            if limit.reset_at is not None:
+                reset = f"; quota resets at {_wall_clock(datetime.fromtimestamp(limit.reset_at, timezone.utc))}"
+            reason = f"GitHub rate limit exhausted{reset}"
+            return FileFetchError(reason, reason, True)
+        return FileFetchError("GitHub rate limit; wait before retrying", "GitHub rate limit", True)
+    return FileFetchError(f"GitHub returned HTTP {status}")
+
+
+def _wall_clock(instant: datetime) -> str:
+    return instant.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 class OllamaGrader:
@@ -356,6 +393,8 @@ def main(
         if not result.complete:
             for reason in result.incomplete_because:
                 err.write(reason + "\n")
+            if result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
+                err.write("GitHub allows 60 unauthenticated requests/hour; set GITHUB_TOKEN for 5,000.\n")
             return 2
         if args.dry_run:
             return 0
