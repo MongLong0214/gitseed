@@ -1,0 +1,23 @@
+Ruled-out: a numeric sentinel for "not graded" | -1 and 0 are both safe only
+  while GradeResult enforces 1..10, and both stop being safe the moment that
+  range opens downward — silently. A mutation swapping -1 for 0 survived the
+  suite, which is what a sentinel chosen against a range looks like from the
+  outside. `score` is now `int | None` and `ranked` states where None goes
+Ruled-out: dropping blocked or ungraded entries from the ranking | a reviewer who
+  sees only the gradeable ones cannot tell a quiet day from a broken grader
+Ruled-out: letting a grading failure end the run | it makes one flaky model call
+  discard every candidate already screened
+Warn: `complete` covers stages this module runs. It cannot speak for a candidate
+  whose repository changed between collection and grading
+Verified: 119 tests; seven mutations (ignore truncation, grade a high-severity
+  candidate, drop unreadable repositories, propagate a grading failure, put
+  stars in the digest, drop ungraded from the ranking) each kill at least one
+Evidence: gitseed/pipeline/run.py
+Evidence: tests/test_pipeline.py
+Follows: r-gs4a01
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs5b02
+Provenance: authored
+CommitLore-Version: 2.0.0
