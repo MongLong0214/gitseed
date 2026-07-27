@@ -1,0 +1,24 @@
+Ruled-out: retrying on a bare 403 | half of them are permissions errors and no
+  amount of waiting fixes those
+Ruled-out: returning an empty list on a rate limit | that is exactly the seed's
+  silent truncation, one layer up
+Ruled-out: reading X-RateLimit-Remaining case-sensitively | a proxy that
+  lowercases headers would look like unlimited budget, and the mutation test
+  for it breaks six cases
+Warn: `seconds_until_reset` has a one-second floor on purpose — a clock a second
+  fast would otherwise produce a zero-length sleep and a hot retry loop
+Verified: 64 tests, none touching the network — every case runs through a fake
+  transport
+Verified: 7 mutations each break at least one, including silently marking a
+  truncated result complete
+Unverified: behaviour against the real API under an actual limit; the header
+  shapes are taken from GitHub's documentation, not observed
+Evidence: gitseed/collect/ratelimit.py
+Evidence: tests/test_collect.py
+Follows: r-gs0005
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs0006
+Provenance: authored
+CommitLore-Version: 2.0.0
