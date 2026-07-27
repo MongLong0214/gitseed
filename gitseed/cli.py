@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
 from .application import execute, replay
+from .artifact import RunArtifact
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
@@ -24,7 +25,7 @@ from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.trailers import render_block
-from .scoring import ScoreInputs
+from .scoring import ScoreInputs, WEIGHTS
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -36,6 +37,8 @@ OLLAMA_TAGS_URL: Final = "http://localhost:11434/api/tags"
 # A cold one-token reply from the local 32B model took about 23 seconds; a
 # multi-file digest needs several times that budget instead of the old 30-second default.
 DEFAULT_GRADE_TIMEOUT: Final = 120
+EXIT_CODES: Final = "Exit codes: 0 complete; 1 invalid invocation or operational failure; 2 incomplete run."
+SCORE_LIMIT: Final = "Score measures small-versus-medium size; it does not predict that a repository will take off."
 SOURCE_FILE_BYTE_CAP: Final = 100_000
 SOURCE_TOTAL_BYTE_CAP: Final = 500_000
 SOURCE_FILE_COUNT_CAP: Final = 20
@@ -237,6 +240,18 @@ class GitHubClient:
             raise RuntimeError(f"GitHub returned HTTP {status} for {method} {url}")
 
 
+class CollectedRepository:
+    def __init__(self, repository: FixtureTransport | GitHubRepository, collected: CollectResult) -> None:
+        self._repository = repository
+        self._collected = collected
+
+    def search(self, query: str, limit: int) -> CollectResult:
+        return self._collected
+
+    def metadata(self, candidate: Candidate, at: datetime) -> RepositoryMetadata:
+        return self._repository.metadata(candidate, at)
+
+
 def _github_response_error(status: int, headers: Mapping[str, str]) -> FileFetchError | None:
     kind = classify(status, headers)
     if kind == "ok":
@@ -305,10 +320,11 @@ class OllamaGrader:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="gitseed")
+    parser = argparse.ArgumentParser(prog="gitseed", epilog=EXIT_CODES)
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("run")
-    command.add_argument("--query", required=True, help="GitHub repository search query")
+    command = commands.add_parser("radar", aliases=["run"], description=SCORE_LIMIT, epilog=EXIT_CODES)
+    command.add_argument("--query", help="GitHub repository search query")
+    command.add_argument("--replay", type=Path, help="render a recorded artifact without live I/O")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
     command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
     # A default write turns an accidental invocation into an external side effect.
@@ -318,9 +334,14 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
     command.add_argument("--artifact", type=Path, help="write a replayable record of this run")
-    replay_command = commands.add_parser("replay")
+    replay_command = commands.add_parser("replay", description="Compatibility alias for radar --replay.", epilog=EXIT_CODES)
     replay_command.add_argument("artifact", type=Path)
     replay_command.add_argument("--json", action="store_true")
+    explain_command = commands.add_parser("explain", description=SCORE_LIMIT, epilog=EXIT_CODES)
+    explain_command.add_argument("repo")
+    explain_command.add_argument("--artifact", type=Path, required=True)
+    export_command = commands.add_parser("export", description="Write the canonical versioned run artifact to standard output.", epilog=EXIT_CODES)
+    export_command.add_argument("artifact", type=Path)
     return parser
 
 
@@ -332,15 +353,92 @@ def _records(entries: Sequence[Reviewed]) -> list[dict[str, str | int | None]]:
 
 
 def _table(entries: Sequence[Reviewed]) -> str:
-    rows = _records(entries)
-    columns = ["rank", "repo", "score", "severity"]
+    return _table_rows(_records(entries))
+
+
+def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
+    columns = ["rank", "repo", "score"]
+    if rows and "weight_version" in rows[0]:
+        columns.extend(["weight_version", "coverage", "risk", "recommendation"])
+    else:
+        columns.append("severity")
     if any(row["withheld"] for row in rows):
         columns.append("withheld")
-    widths = {column: max(len(column), *(len(str(row[column] if row[column] is not None else "-")) for row in rows)) for column in columns}
+    widths = {column: max([len(column), *(len(str(row[column] if row[column] is not None else "-")) for row in rows)]) for column in columns}
     lines = ["  ".join(column.ljust(widths[column]) for column in columns)]
     for row in rows:
         lines.append("  ".join(str(row[column] if row[column] is not None else "-").ljust(widths[column]) for column in columns))
     return "\n".join(lines)
+
+
+def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
+    recommendations = {scored.repo: scored.recommendation for scored in artifact.scores}
+    entries = sorted(
+        artifact.result.reviewed,
+        key=lambda entry: (
+            not recommendations[entry.candidate.repo].recommended,
+            -recommendations[entry.candidate.repo].score.value,
+            entry.candidate.repo,
+        ),
+    )
+    return [
+        {
+            "rank": index,
+            "repo": entry.candidate.repo,
+            "score": str(recommendations[entry.candidate.repo].score.value),
+            "weight_version": recommendations[entry.candidate.repo].score.version,
+            "coverage": f"{len(recommendations[entry.candidate.repo].score.coverage)}/3",
+            "risk": recommendations[entry.candidate.repo].risk_verdict,
+            "recommendation": "review" if recommendations[entry.candidate.repo].recommended else "not recommended",
+            "severity": entry.severity,
+            "withheld": entry.withheld,
+        }
+        for index, entry in enumerate(entries, start=1)
+    ]
+
+
+def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
+    records = _radar_records(artifact)
+    if as_json:
+        json.dump(records, out)
+        out.write("\n")
+        return
+    out.write(SCORE_LIMIT + "\n")
+    out.write(_table_rows(records) + "\n")
+
+
+def _replay(path: Path) -> RunArtifact:
+    return replay(path.read_bytes())
+
+
+def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> int:
+    if source is not None:
+        err.write(f"source: {source}\n")
+    if artifact.result.complete:
+        return 0
+    for reason in artifact.result.incomplete_because:
+        err.write(reason + "\n")
+    return 2
+
+
+def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
+    trace = next((trace for trace in artifact.repositories if trace.candidate.repo == repo), None)
+    recommendation = next((scored.recommendation for scored in artifact.scores if scored.repo == repo), None)
+    if trace is None or recommendation is None:
+        return False
+    score = recommendation.score
+    values = None if trace.metadata is None else trace.metadata.score_inputs
+    out.write(SCORE_LIMIT + "\n")
+    out.write(f"repository: {repo}\nweight set: {score.version}\nscore: {score.value}\n")
+    for feature, weight in WEIGHTS:
+        value = None if values is None else getattr(values, feature.value)
+        contribution = "unavailable" if value is None else str(weight if value else 0)
+        out.write(f"{feature.value}: {contribution}\n")
+    unavailable = ", ".join(reason.removesuffix(" unavailable") for reason in score.incomplete_because)
+    out.write(f"unavailable features: {unavailable or 'none'}\n")
+    out.write(f"risk: {recommendation.risk_verdict}\n")
+    out.write(f"recommendation: {'review' if recommendation.recommended else 'not recommended'}\n")
+    return True
 
 
 def _action_approvals(approval: Approval, owner: str) -> list[Approval]:
@@ -389,22 +487,45 @@ def main(
     err = sys.stderr if stderr is None else stderr
     if args.command == "replay":
         try:
-            artifact = replay(args.artifact.read_bytes())
+            artifact = _replay(args.artifact)
         except (OSError, ValueError) as error:
             err.write(f"replay failed: {error}\n")
             return 1
-        entries = ranked(artifact.result)
-        if args.json:
-            json.dump(_records(entries), out)
-            out.write("\n")
-        else:
-            out.write(_table(entries) + "\n")
-        if artifact.result.complete:
-            return 0
-        for reason in artifact.result.incomplete_because:
-            err.write(reason + "\n")
-        return 2
-    if args.command != "run":
+        _render_radar(artifact, args.json, out)
+        return _status(artifact, err, "replayed artifact")
+    if args.command == "explain":
+        try:
+            artifact = _replay(args.artifact)
+        except (OSError, ValueError) as error:
+            err.write(f"explain failed: {error}\n")
+            return 1
+        if not _explain(artifact, args.repo, out):
+            err.write(f"explain failed: no repository {args.repo!r} in artifact\n")
+            return 1
+        return _status(artifact, err, "replayed artifact")
+    if args.command == "export":
+        try:
+            artifact = _replay(args.artifact)
+        except (OSError, ValueError) as error:
+            err.write(f"export failed: {error}\n")
+            return 1
+        out.write(artifact.to_bytes().decode())
+        return _status(artifact, err, "replayed artifact")
+    if args.command not in ("radar", "run"):
+        return 1
+    if args.replay is not None:
+        if args.query is not None:
+            err.write("invalid invocation: --query cannot be used with --replay\n")
+            return 1
+        try:
+            artifact = _replay(args.replay)
+        except (OSError, ValueError) as error:
+            err.write(f"radar failed: {error}\n")
+            return 1
+        _render_radar(artifact, args.json, out)
+        return _status(artifact, err, "replayed artifact")
+    if args.query is None:
+        err.write("invalid invocation: --query is required unless --replay is used\n")
         return 1
     if args.limit < 1:
         err.write("invalid invocation: --limit must be positive\n")
@@ -428,40 +549,29 @@ def main(
             model, reason = resolve_model(ollama_transport)
             err.write(f"grading model: {model} ({reason})\n")
             active_grader = OllamaGrader(model, ollama_transport)
-        active_writer = writer or (fixture if fixture is not None else client)
-        if args.artifact is None:
-            collected = collect(args.query, transport=active_transport, pages=(args.limit + 99) // 100, per_page=min(args.limit, 100))
-            if fixture is not None and not fixture.complete:
-                collected.complete = False
-                collected.stopped_because = str(fixture.stopped_because or "fixture reported an incomplete collection")
-            collected.candidates = collected.candidates[:args.limit]
-            result = run(collected, fetch_files=active_fetch_files, grader=active_grader)
-        else:
-            recorded = execute(
-                RunRequest(args.query, args.limit),
-                RunPorts(
-                    fixture if fixture is not None else GitHubRepository(active_transport),
-                    CallableFileReader(active_fetch_files),
-                    active_grader,
-                    SystemClock(),
-                ),
-            )
+        repository = fixture if fixture is not None else GitHubRepository(active_transport)
+        collected = repository.search(args.query, args.limit)
+        recorded = execute(
+            RunRequest(args.query, args.limit),
+            RunPorts(
+                CollectedRepository(repository, collected),
+                CallableFileReader(active_fetch_files),
+                active_grader,
+                SystemClock(),
+            ),
+        )
+        if args.artifact is not None:
             args.artifact.write_bytes(recorded.to_bytes())
-            result = recorded.result
-        entries = ranked(result)
-        if args.json:
-            json.dump(_records(entries), out)
-            out.write("\n")
-        else:
-            out.write(_table(entries) + "\n")
-        if not result.complete:
-            for reason in result.incomplete_because:
-                err.write(reason + "\n")
-            if result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
+        _render_radar(recorded, args.json, out)
+        status = _status(recorded, err)
+        if status == 2:
+            if recorded.result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
                 err.write("GitHub allows 60 unauthenticated requests/hour; set GITHUB_TOKEN for 5,000.\n")
             return 2
         if args.dry_run:
             return 0
+        active_writer = writer or (fixture if fixture is not None else client)
+        entries = ranked(recorded.result)
         try:
             approvals = _approvals(entries, args.approve_all, source_in, out)
         except NotInteractive as error:
