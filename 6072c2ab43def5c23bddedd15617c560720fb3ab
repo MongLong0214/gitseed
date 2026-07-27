@@ -1,0 +1,22 @@
+Ruled-out: a boolean verdict like the seed's `security_flag` | one bit cannot
+  separate "ships a payload" from "mentions an IP", so acting on the strong case
+  means accepting the weak one
+Ruled-out: flagging short base64 and hex | they are hashes, keys and test
+  vectors; length is what distinguishes a checksum from a payload, and the clean
+  corpus proves the threshold with a real sha256
+Warn: severity is three levels on purpose — collapsing it to a boolean anywhere
+  downstream reintroduces the seed's defect
+Verified: 30 tests pass; 8 mutations each break at least one
+Verified: the screen imports nothing that reaches outside — checked by AST in
+  both the suite and CI, not by reading
+Unverified: the typosquatting dependency list — named in the ticket, not built,
+  because its source and refresh cadence are undecided
+Evidence: tests/test_signals.py
+Evidence: gitseed/screen/signals.py
+Follows: r-gs0003
+Blast: module
+Undo: easy
+Certainty: firm
+Record-Id: r-gs0004
+Provenance: authored
+CommitLore-Version: 2.0.0
