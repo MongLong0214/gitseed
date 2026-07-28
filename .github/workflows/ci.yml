@@ -49,3 +49,26 @@ jobs:
         run: python -m gitseed run --query x --fixtures tests/fixtures
       - name: Compile package
         run: python -m compileall gitseed
+      - name: Build distribution package
+        run: python -m pip install "build>=1.0" && python -m build
+      - name: Verify wheel contents
+        run: |
+          python -m pip install zipfile-inspect
+          wheel_file=$(ls dist/*.whl | head -1)
+          python -c "
+          import zipfile
+          import sys
+          with zipfile.ZipFile('$wheel_file', 'r') as z:
+              names = z.namelist()
+              top_level = set(n.split('/')[0] for n in names)
+              unwanted = {'assets', 'docs', 'scripts', 'tests'}
+              found = unwanted & top_level
+              if found:
+                  print(f'ERROR: Found unwanted top-level packages: {found}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'✓ Wheel contains only expected packages')
+          "
+      - name: Install built package and verify console script
+        run: |
+          pip install dist/*.whl
+          gitseed --help
