@@ -45,3 +45,12 @@ not by this PRD's unspecified "20 calls" figure (which requirement 2 of the AC a
 call-repetition for the *determinism* check, a different measurement than sample count for the
 *clean-file false-positive* check). The two requirements were conflated here; F6's module comment
 is the current, measured record for sample count.
+
+## Correction — 2026-07-28 deep review
+
+Requirement 1's "if it fails, disable F3 and operate with F2 only (degraded function,
+preserved integrity)" does not hold for every failure mode inside F6's implementation of that
+requirement — specifically, an exception raised by the malicious-sample check is not caught,
+and can fail the whole run instead of degrading it. See
+[`docs/tickets/F3-grade.md`](../tickets/F3-grade.md) and
+[issue #50](https://github.com/MongLong0214/gitseed/issues/50) (GS-P1-001).

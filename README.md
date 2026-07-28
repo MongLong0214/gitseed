@@ -52,6 +52,38 @@ python3 -m gitseed radar --replay run.json
 
 Exit codes: `0` complete; `1` invalid invocation or operational failure; `2` incomplete run.
 
+## Known limitations (as of the 2026-07-28 review)
+
+A static review of `dev` at `d0e1ecd` found gaps between what the security-screening and
+recommendation machinery is built to do and what a live run actually does. None of these are
+addressed yet; each is tracked as its own issue rather than fixed silently.
+
+- **The live scanner does not read `package.json`, or any other manifest, lockfile, or
+  workflow file.** `SOURCE_EXTENSIONS` in `gitseed/cli.py` is an allow-list of source-code
+  extensions only — no `.json` entry — so a live run's file selector never hands
+  `package.json` to the scanner. The `postinstall`/`preinstall` detection rule in
+  `gitseed/screen/signals.py` is implemented and passes its unit tests, but those tests read a
+  fixture directory directly, bypassing the live selector; against a real GitHub repository,
+  a malicious `postinstall` hook in `package.json` is currently invisible to gitseed.
+  ([issue #45](https://github.com/MongLong0214/gitseed/issues/45))
+- **`recommendation: review` means "not blocked by a high-risk deterministic finding," not
+  "safe" or "worth reviewing."** A candidate with zero readable files, zero score coverage,
+  and an `unknown` risk verdict currently renders identically to one that was fully scanned
+  and came back clean. ([issue #46](https://github.com/MongLong0214/gitseed/issues/46))
+- **Files skipped by the 20-file/500KB screening caps do not affect severity or
+  recommendation**, and selection currently follows raw file-tree order — a repository can be
+  structured so a malicious file past the 20th position is never scanned, with no signal that
+  this happened. ([issue #48](https://github.com/MongLong0214/gitseed/issues/48),
+  [issue #49](https://github.com/MongLong0214/gitseed/issues/49))
+- **The radar table, `--json`/`explain` output, and the interactive approval queue currently
+  rank candidates by two different scores** — the table by the deterministic metadata score,
+  the approval prompt by the local model's `idea + skill` grade — so the order a person
+  reviews on screen is not guaranteed to be the order they are asked to approve.
+  ([issue #36](https://github.com/MongLong0214/gitseed/issues/36))
+
+None of this is "safe": read it as "no high-risk pattern was found in the files that were
+actually scanned," not as a security guarantee about the repository as a whole.
+
 ## What it does not do yet
 
 - The review queue's full offline fixture cycle runs under a real PTY; production still refuses piped approval.
