@@ -9,8 +9,9 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlencode
+from warnings import warn
 
-from .ratelimit import RateLimit, classify, parse
+from .ratelimit import MAX_WAIT_SECONDS, RateLimit, classify, parse
 
 
 @dataclass(frozen=True)
@@ -145,18 +146,28 @@ def collect(
 
         if kind == "rate-limited":
             limit: RateLimit = parse(headers)
+            reset_seconds = limit.seconds_until_reset(now())
+            stopped_because = (
+                f"rate limited after {result.pages_fetched} page(s); resets in {reset_seconds:.0f}s"
+            )
+            if reset_seconds > MAX_WAIT_SECONDS:
+                stopped_because += f"; retry wait capped at {MAX_WAIT_SECONDS:.0f}s"
             if not wait:
                 result.complete = False
-                result.stopped_because = (
-                    f"rate limited after {result.pages_fetched} page(s); "
-                    f"resets in {limit.seconds_until_reset(now()):.0f}s"
-                )
+                result.stopped_because = stopped_because
                 return result
-            sleep(limit.seconds_until_reset(now()))
+            if reset_seconds > MAX_WAIT_SECONDS:
+                warn(
+                    f"rate limit wait capped at {MAX_WAIT_SECONDS:.0f}s; "
+                    f"server requested {reset_seconds:.0f}s",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            sleep(min(reset_seconds, MAX_WAIT_SECONDS))
             status, headers, body = transport.get(url)
             if classify(status, headers) != "ok":
                 result.complete = False
-                result.stopped_because = "still rate limited after waiting for the reset"
+                result.stopped_because = f"{stopped_because}; still rate limited after waiting"
                 return result
 
         elif kind == "forbidden":

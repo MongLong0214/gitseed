@@ -130,17 +130,17 @@ def run_smoke(client: GradeClient) -> SmokeResult:
 
     try:
         repeats = [client.evaluate(CLEAN_DIGEST) for _ in range(max(DETERMINISM_RUNS, CLEAN_SAMPLES))]
-    except Exception as exc:  # noqa: BLE001 — any failure to answer is a failure
-        return SmokeResult(False, model, [f"could not produce a grade at all: {exc}"])
-
-    model = repeats[0].model
-    for check in (
-        _check_clean(client),
-        _check_malicious(client),
-        _check_description_never_warns(repeats),
-        _check_determinism(repeats),
-    ):
-        if check is not None:
-            failures.append(check)
+        model = repeats[0].model
+        for check in (
+            _check_clean(client),
+            _check_malicious(client),
+            _check_description_never_warns(repeats),
+            _check_determinism(repeats),
+        ):
+            if check is not None:
+                failures.append(check)
+    except Exception as exc:  # noqa: BLE001 — every client call belongs to the smoke result
+        failure = "could not produce a grade at all" if model == "unknown" else "could not complete smoke checks"
+        return SmokeResult(False, model, [f"{failure}: {exc}"])
 
     return SmokeResult(not failures, model, failures)
