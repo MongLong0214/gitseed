@@ -12,6 +12,7 @@ from gitseed.scoring import (
     WEIGHT_VERSION,
     Feature,
     Recommendation,
+    RecommendationStatus,
     ScoreInputs,
     ScoreVersionMismatch,
     score,
@@ -74,9 +75,47 @@ def test_inv_002_high_risk_blocks_top_score() -> None:
     low_risk = Recommendation(top_score, LOW)
 
     # Then: risk gates recommendation instead of reducing the numeric score.
-    assert not high_risk.recommended
-    assert low_risk.recommended
+    assert high_risk.status is RecommendationStatus.BLOCKED
+    assert low_risk.status is RecommendationStatus.REVIEW
     assert high_risk.score == low_risk.score == top_score
+
+
+def test_a_zero_score_is_not_recommended() -> None:
+    # Given: complete evidence that every scored feature is false.
+    recommendation = Recommendation(score(ScoreInputs(False, False, False)), LOW)
+
+    # When/Then: zero merit is a negative decision, not an affirmative review.
+    assert recommendation.status is RecommendationStatus.NOT_PRIORITY
+
+
+def test_missing_score_evidence_is_distinct_from_not_priority() -> None:
+    # Given: no metadata observation and no security verdict from unread files.
+    recommendation = Recommendation(score(ScoreInputs(None, None, None)), "unknown")
+
+    # When/Then: the caller can distinguish insufficient evidence from rejection.
+    assert recommendation.status is RecommendationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_recommendations_only_shrink_from_the_old_predicate() -> None:
+    # Given: good, zero-score, missing-evidence, and blocking candidates.
+    candidates = {
+        "good": Recommendation(score(ScoreInputs(True, True, True)), LOW),
+        "zero": Recommendation(score(ScoreInputs(False, False, False)), LOW),
+        "missing": Recommendation(score(ScoreInputs(None, None, None)), "unknown"),
+        "blocked": Recommendation(score(ScoreInputs(True, True, True)), HIGH),
+    }
+
+    # When: the old predicate and new affirmative status are compared.
+    old_recommended = {name for name, item in candidates.items() if item.risk_verdict != HIGH}
+    new_recommended = {
+        name
+        for name, item in candidates.items()
+        if item.status is RecommendationStatus.REVIEW
+    }
+
+    # Then: no candidate becomes recommended as a side effect of the fix.
+    assert new_recommended == {"good"}
+    assert new_recommended <= old_recommended
 
 
 def test_same_inputs_produce_identical_score() -> None:

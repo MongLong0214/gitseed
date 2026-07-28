@@ -7,12 +7,20 @@ from typing import Final
 
 from .evidence import ClaimBasis
 from .screen.signals import HIGH
+from .screen.verdict import NONE_FOUND_IN_SCANNED_FILES
 
 
 class Feature(str, Enum):
     COMMIT_CADENCE_30D = "commit_cadence_30d"
     CONTRIBUTOR_COUNT = "contributor_count"
     HAS_LICENSE = "has_license"
+
+
+class RecommendationStatus(str, Enum):
+    BLOCKED = "blocked"
+    INSUFFICIENT_EVIDENCE = "insufficient-evidence"
+    REVIEW = "review"
+    NOT_PRIORITY = "not-priority"
 
 
 ALL_FEATURES: Final = tuple(Feature)
@@ -77,8 +85,18 @@ class Recommendation:
     risk_verdict: str
 
     @property
-    def recommended(self) -> bool:
-        return self.risk_verdict != HIGH
+    def status(self) -> RecommendationStatus:
+        if self.risk_verdict == HIGH:
+            return RecommendationStatus.BLOCKED
+        if (
+            self.score.basis is ClaimBasis.ABSENT
+            or not self.score.complete
+            or self.risk_verdict in {"unknown", NONE_FOUND_IN_SCANNED_FILES}
+        ):
+            return RecommendationStatus.INSUFFICIENT_EVIDENCE
+        if self.score.value > 0:
+            return RecommendationStatus.REVIEW
+        return RecommendationStatus.NOT_PRIORITY
 
 
 def score(features: ScoreInputs) -> Score:
