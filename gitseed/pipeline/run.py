@@ -20,8 +20,9 @@ from typing import Callable, Sequence
 from ..collect.search import Candidate, CollectResult
 from ..evidence import ClaimBasis
 from ..grade.types import GradeClient, GradeResult
+from ..screen.coverage import SourceCoverage
 from ..screen.signals import Signal, scan_files
-from ..screen.verdict import findings, severity_of, unverified
+from ..screen.verdict import findings, risk_of, unverified
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,9 @@ class Reviewed:
     skipped_files: tuple[str, ...] = ()
     screening_basis: ClaimBasis = ClaimBasis.ABSENT
     screened_files: tuple[str, ...] = ()
+    #: `None` when the file source did not model coverage (fixtures, or no
+    #: files were ever fetched). Present for every live GitHub adapter read.
+    coverage: SourceCoverage | None = None
 
     @property
     def findings(self) -> tuple[Signal, ...]:
@@ -89,6 +93,9 @@ class FetchedFiles:
     complete: bool = True
     incomplete_because: str | None = None
     rate_limited: bool = False
+    #: `None` from a source that does not model policy caps at all (fixture
+    #: replay reads a directory directly, with no allow-list or budget).
+    coverage: SourceCoverage | None = None
 
 
 @dataclass(frozen=True)
@@ -156,10 +163,12 @@ def run(
             files = fetched.files
             skipped = fetched.skipped
             source_complete = fetched.complete
+            coverage = fetched.coverage
         else:
             files = fetched
             skipped = ()
             source_complete = True
+            coverage = None
 
         if not source_complete:
             result.mark_incomplete(fetched.incomplete_because or f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
@@ -177,12 +186,13 @@ def run(
                     grade=None,
                     withheld=reason,
                     skipped_files=skipped,
+                    coverage=coverage,
                 )
             )
             continue
 
         signals = scan_files(files)
-        severity = severity_of(signals)
+        severity = risk_of(signals, coverage)
         screened_files = tuple(path for path, _ in files)
 
         if severity == BLOCKING_SEVERITY:
@@ -196,6 +206,7 @@ def run(
                     skipped_files=skipped,
                     screening_basis=ClaimBasis.DETERMINISTIC,
                     screened_files=screened_files,
+                    coverage=coverage,
                 )
             )
             continue
@@ -211,6 +222,7 @@ def run(
                     skipped_files=skipped,
                     screening_basis=ClaimBasis.DETERMINISTIC,
                     screened_files=screened_files,
+                    coverage=coverage,
                 )
             )
             continue
@@ -229,6 +241,7 @@ def run(
                     skipped_files=skipped,
                     screening_basis=ClaimBasis.DETERMINISTIC,
                     screened_files=screened_files,
+                    coverage=coverage,
                 )
             )
             continue
@@ -242,6 +255,7 @@ def run(
                 skipped_files=skipped,
                 screening_basis=ClaimBasis.DETERMINISTIC,
                 screened_files=screened_files,
+                coverage=coverage,
             )
         )
 
