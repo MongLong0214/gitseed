@@ -19,6 +19,7 @@ from gitseed.cli import main
 
 ROOT = Path(__file__).parent.parent
 VALIDATOR = Path.home() / "projects/annals/dist/cli.js"
+COMMITLORE_MJS = Path.home() / "projects/annals/dist/commitlore.mjs"
 PROMPT = b"[s]tar [f]ollow [b]oth [n]ext(\xea\xb1\xb0\xeb\xb6\x80) [q]uit > "
 
 
@@ -41,6 +42,21 @@ class RecordingWriter:
         self.calls.append(("unfollow", user))
 
 
+class RecordingCommitter:
+    """A committer fake whose only effect is retaining the message it would have
+    committed. These tests exercise the real terminal and a real subprocess-run
+    CLI in the gitseed repository's own working tree (`os.chdir(ROOT)` below); a
+    real `SubprocessGitCommitter` here would create actual commits in this
+    repository every time the suite runs. This fake is why it does not."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def commit(self, message: str) -> str:
+        self.messages.append(message)
+        return f"fake-sha-{len(self.messages)}"
+
+
 def _command(*extra: str) -> list[str]:
     return ["run", "--query", "example", "--fixtures", "tests/fixtures", "--no-dry-run", *extra]
 
@@ -60,15 +76,20 @@ def _bind_standard_streams() -> None:
     sys.stderr = os.fdopen(2, "w", closefd=False)
 
 
-def _run_under_pty(tmp_path: Path, answers: Sequence[bytes], *extra: str) -> tuple[int, list[list[str]], str]:
+def _run_under_pty(
+    tmp_path: Path, answers: Sequence[bytes], *extra: str
+) -> tuple[int, list[list[str]], str, list[str]]:
     result_path = tmp_path / "review-result.json"
     pid, master_fd = pty.fork()
     if pid == 0:
         os.chdir(ROOT)
         _bind_standard_streams()
         writer = RecordingWriter()
-        exit_code = main(_command(*extra), writer=writer)
-        result_path.write_text(json.dumps({"exit_code": exit_code, "calls": writer.calls}))
+        committer = RecordingCommitter()
+        exit_code = main(_command(*extra), writer=writer, committer=committer)
+        result_path.write_text(
+            json.dumps({"exit_code": exit_code, "calls": writer.calls, "commits": committer.messages})
+        )
         os._exit(exit_code)
 
     transcript = bytearray()
@@ -100,7 +121,7 @@ def _run_under_pty(tmp_path: Path, answers: Sequence[bytes], *extra: str) -> tup
     _, status = os.waitpid(pid, 0)
     assert os.WIFEXITED(status)
     result = json.loads(result_path.read_text())
-    return result["exit_code"], result["calls"], transcript.decode()
+    return result["exit_code"], result["calls"], transcript.decode(), result["commits"]
 
 
 def _run_over_pipe(tmp_path: Path) -> tuple[int, list[list[str]]]:
@@ -130,12 +151,16 @@ def _run_over_pipe(tmp_path: Path) -> tuple[int, list[list[str]]]:
 def test_review_cycle_uses_a_real_pty_and_records_only_authorised_writes(tmp_path: Path) -> None:
     # Given: a real terminal with three ranked fixture candidates.
     # When: the reviewer stars one, rejects one, then quits before the remainder.
-    exit_code, calls, transcript = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
+    exit_code, calls, transcript, commits = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
     # Then: only the star is written, and ranking precedes prompts, actions, and recorded decisions.
     assert exit_code == 0
     assert calls == [["star", "fixture/clean"]]
     assert "Ruled-out: fixture/second | \ub9ac\ubdf0\uc5b4\uac00 \uc774\uc720\ub97c \ub0a8\uae30\uc9c0 \uc54a\uc558\ub2e4" in transcript
     assert transcript.index("fixture/malicious") < transcript.index("[s]tar") < transcript.index("Verified:")
+    # And: the decision reached a commit, not only the terminal.
+    assert len(commits) == 1
+    assert "Ruled-out: fixture/second |" in commits[0]
+    assert "Verified: fixture/clean" in commits[0]
 
 
 def test_review_cycle_refuses_an_os_pipe_so_removing_the_tty_guard_fails_this_test(tmp_path: Path) -> None:
@@ -151,7 +176,7 @@ def test_review_cycle_refuses_an_os_pipe_so_removing_the_tty_guard_fails_this_te
 def test_printed_review_trailer_block_validates(tmp_path: Path) -> None:
     # Given: a completed real-PTY review cycle containing an approval and a rejection.
     # When: its printed trailer block is checked by CommitLore.
-    _, _, transcript = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
+    _, _, transcript, _ = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
     trailer_path = tmp_path / "trailers.txt"
     trailer_path.write_text(transcript[transcript.index("Verified:"):])
     validated = subprocess.run(
@@ -164,12 +189,88 @@ def test_printed_review_trailer_block_validates(tmp_path: Path) -> None:
     assert validated.returncode == 0, validated.stderr
 
 
+@pytest.mark.skipif(not COMMITLORE_MJS.is_file(), reason="commitlore is unavailable at ~/projects/annals/dist/commitlore.mjs")
+def test_the_committed_decision_message_validates(tmp_path: Path) -> None:
+    # Given: a completed real-PTY review cycle containing an approval and a rejection.
+    # When: the message actually handed to git is checked by CommitLore.
+    _, _, _, commits = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
+    assert len(commits) == 1
+    message_path = tmp_path / "commit-message.txt"
+    message_path.write_text(commits[0])
+    validated = subprocess.run(
+        ["node", str(COMMITLORE_MJS), "validate", "--message-file", str(message_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    # Then: the exact message that would have been committed is a valid CommitLore message.
+    assert validated.returncode == 0, validated.stderr
+
+
 def test_approve_all_asks_once_and_derives_one_approval_per_target(tmp_path: Path) -> None:
     # Given: the same three ranked fixture candidates in bulk-review mode.
     # When: the reviewer gives the one bulk approval answer.
-    exit_code, calls, transcript = _run_under_pty(tmp_path, [b"s\n"], "--approve-all")
+    exit_code, calls, transcript, commits = _run_under_pty(tmp_path, [b"s\n"], "--approve-all")
     # Then: one prompt authorises exactly one star per target.
     assert exit_code == 0
     assert calls == [["star", "fixture/clean"], ["star", "fixture/second"], ["star", "fixture/malicious"]]
     assert transcript.count("[s]tar [f]ollow [b]oth [n]ext(거부) [q]uit > ") == 1
     assert transcript.count("Verified:") == 3
+    # And: one commit carries all three decisions, not one commit per target.
+    assert len(commits) == 1
+    assert commits[0].count("Verified:") == 3
+
+
+def test_quitting_before_any_decision_commits_nothing(tmp_path: Path) -> None:
+    # Given: the same three ranked fixture candidates.
+    # When: the reviewer quits before deciding on the first one.
+    exit_code, calls, _, commits = _run_under_pty(tmp_path, [b"q\n"])
+    # Then: no external write and no decision commit — a session with no judgment
+    # is not a judgment that nothing changed.
+    assert exit_code == 0
+    assert calls == []
+    assert commits == []
+
+
+def test_a_rejection_only_session_still_commits(tmp_path: Path) -> None:
+    # Given: the same three ranked fixture candidates.
+    # When: the reviewer rejects every one instead of quitting.
+    exit_code, calls, _, commits = _run_under_pty(tmp_path, [b"n\n", b"n\n", b"n\n"])
+    # Then: no external write happened, but the rejections still reached a commit —
+    # recording only approvals would erase what was not done, and why.
+    assert exit_code == 0
+    assert calls == []
+    assert len(commits) == 1
+    assert commits[0].count("Ruled-out:") == 3
+
+
+def test_dry_run_never_creates_a_decision_commit(tmp_path: Path) -> None:
+    # Given: the default dry-run invocation (no --no-dry-run), so no approval is possible.
+    result_path = tmp_path / "dry-run-result.json"
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        os.chdir(ROOT)
+        _bind_standard_streams()
+        committer = RecordingCommitter()
+        exit_code = main(
+            ["run", "--query", "example", "--fixtures", "tests/fixtures"],
+            committer=committer,
+        )
+        result_path.write_text(json.dumps({"exit_code": exit_code, "commits": committer.messages}))
+        os._exit(exit_code)
+    try:
+        while True:
+            readable, _, _ = select.select([master_fd], [], [], 5)
+            if not readable:
+                raise AssertionError("dry-run CLI did not finish")
+            if not _read_terminal(master_fd):
+                break
+    finally:
+        os.close(master_fd)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status)
+    result = json.loads(result_path.read_text())
+    # Then: the default dry-run path never reaches the commit step at all — a mutation
+    # that moved the commit call above the `args.dry_run` check would make this fail.
+    assert result["exit_code"] == 0
+    assert result["commits"] == []
