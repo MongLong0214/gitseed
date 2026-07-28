@@ -4,10 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .artifact import (
+    ENGINE_VERSIONS,
+    ArtifactCollection,
+    ArtifactFiles,
+    ArtifactPipelineResult,
+    ArtifactSmokeResult,
+    EngineVersionMismatch,
     PortFailure,
     RepositoryTrace,
     RunArtifact,
     ScoredCandidate,
+    SourceMode,
 )
 from .collect.search import Candidate, CollectResult
 from .grade.smoke import SmokeResult, run_smoke
@@ -26,7 +33,13 @@ class MissingPortResponse(RuntimeError):
         return f"no recorded {self.port} response for {self.target}"
 
 
-def execute(request: RunRequest, ports: RunPorts, *, model_smoke: SmokeResult | None = None) -> RunArtifact:
+def execute(
+    request: RunRequest,
+    ports: RunPorts,
+    *,
+    model_smoke: SmokeResult | None = None,
+    source_mode: SourceMode = "digest",
+) -> RunArtifact:
     failures: list[PortFailure] = []
     trace_failures: dict[str, list[PortFailure]] = {}
     metadata: dict[str, RepositoryMetadata | None] = {}
@@ -87,6 +100,8 @@ def execute(request: RunRequest, ports: RunPorts, *, model_smoke: SmokeResult | 
             failures.append(failure)
             trace_failures[candidate.repo].append(failure)
             raise
+        if not isinstance(fetched, FetchedFiles):
+            fetched = FetchedFiles(tuple(fetched))
         files[candidate.repo] = fetched
         return fetched
 
@@ -125,17 +140,35 @@ def execute(request: RunRequest, ports: RunPorts, *, model_smoke: SmokeResult | 
             )
         )
 
+    reviewed_by_repo = {reviewed.candidate.repo: reviewed for reviewed in result.reviewed}
     repositories = tuple(
         RepositoryTrace(
             candidate,
             metadata[candidate.repo],
-            files.get(candidate.repo),
+            None
+            if candidate.repo not in files
+            else ArtifactFiles.from_fetched(
+                files[candidate.repo],
+                source_mode,
+                tuple(reviewed_by_repo[candidate.repo].signals),
+            ),
             grades.get(candidate.repo),
             tuple(trace_failures[candidate.repo]),
         )
         for candidate in collected.candidates
     )
-    return RunArtifact(request, started_at, collected, repositories, result, tuple(scored), smoke, tuple(failures))
+    return RunArtifact(
+        request=request,
+        started_at=started_at,
+        collection=ArtifactCollection.from_collected(collected),
+        repositories=repositories,
+        result=ArtifactPipelineResult.from_result(result),
+        scores=tuple(scored),
+        model_smoke=ArtifactSmokeResult.from_smoke(smoke),
+        failures=tuple(failures),
+        engines=ENGINE_VERSIONS,
+        source_mode=source_mode,
+    )
 
 
 class _RecordingModel:
@@ -167,8 +200,26 @@ class _RecordingModel:
         return self._model.flags_malicious(digest)
 
 
+def render(data: bytes) -> RunArtifact:
+    """Load stored output without executing any artifact inputs."""
+    return RunArtifact.from_bytes(data)
+
+
 def replay(data: bytes) -> RunArtifact:
-    source = RunArtifact.from_bytes(data)
+    """Re-run recorded inputs only when this release has the recorded engine."""
+    source = render(data)
+    for engine in ("pipeline", "screening", "source_selection", "category_packs"):
+        recorded = getattr(source.engines, engine)
+        current = getattr(ENGINE_VERSIONS, engine)
+        if recorded != current:
+            raise EngineVersionMismatch(engine, recorded, current)
+    return re_evaluate(data)
+
+
+def re_evaluate(data: bytes) -> RunArtifact:
+    """Run stored full-source port responses through the current engine."""
+    source = render(data)
+    _require_full_source(source)
     return execute(
         source.request,
         RunPorts(
@@ -177,8 +228,17 @@ def replay(data: bytes) -> RunArtifact:
             _ReplayModel(source),
             _ReplayClock(source),
         ),
-        model_smoke=source.model_smoke,
+        model_smoke=SmokeResult(source.model_smoke.passed, source.model_smoke.model, list(source.model_smoke.failures)),
+        source_mode="full-source",
     )
+
+
+def _require_full_source(artifact: RunArtifact) -> None:
+    for trace in artifact.repositories:
+        if trace.files is not None and trace.files.mode != "full-source":
+            raise ValueError(
+                f"cannot re-evaluate a {trace.files.mode} artifact; record with --source-mode full-source"
+            )
 
 
 class _ReplayRepository:
@@ -229,7 +289,7 @@ class _ReplayFiles:
             raise OSError(failure.detail)
         if trace.files is None:
             raise MissingPortResponse("files", candidate.repo)
-        return trace.files
+        return trace.files.to_fetched()
 
 
 class _ReplayModel:

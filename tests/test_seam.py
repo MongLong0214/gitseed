@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import fields
 from datetime import datetime, timezone
 
-from gitseed.application import execute, replay
+import pytest
+
+from gitseed.application import execute, render, replay
+from gitseed.artifact import EngineVersionMismatch
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
@@ -56,13 +59,13 @@ def ports(files: Files | None = None) -> RunPorts:
     return RunPorts(Repository(), files or Files(), Model(), Clock())
 
 
-def test_replaying_an_artifact_offline_is_byte_identical() -> None:
+def test_rendering_an_artifact_offline_is_byte_identical() -> None:
     # Given: one live run records every response from its four ports.
     artifact = execute(RunRequest("small tools", 1), ports())
     live_bytes = artifact.to_bytes()
 
     # When: only that artifact is replayed, with no live adapters available.
-    replayed_bytes = replay(live_bytes).to_bytes()
+    replayed_bytes = render(live_bytes).to_bytes()
 
     # Then: the complete record and output are identical bytes.
     assert replayed_bytes == live_bytes
@@ -70,13 +73,13 @@ def test_replaying_an_artifact_offline_is_byte_identical() -> None:
     assert artifact.scores[0].score.coverage == frozenset(ALL_FEATURES)
 
 
-def test_a_failed_port_replays_the_same_partial_result() -> None:
+def test_rendering_a_failed_port_preserves_the_same_partial_result() -> None:
     # Given: file reading fails after collection and metadata succeeded.
     artifact = execute(RunRequest("small tools", 1), ports(Files(OSError("offline"))))
     live_bytes = artifact.to_bytes()
 
     # When: the failed run is replayed from its recorded responses.
-    replayed = replay(live_bytes)
+    replayed = render(live_bytes)
 
     # Then: failure remains visible and the replay is byte-identical.
     assert artifact.result.complete is False
@@ -85,17 +88,78 @@ def test_a_failed_port_replays_the_same_partial_result() -> None:
     assert replayed.result.complete is False
 
 
-def test_replay_recomputes_output_from_recorded_port_responses() -> None:
-    # Given: a valid artifact whose recorded output score was corrupted.
-    live_bytes = execute(RunRequest("small tools", 1), ports()).to_bytes()
-    corrupted = live_bytes.replace(b'"value":"0.119096"', b'"value":"999"')
+def test_replay_requires_the_recorded_engine_version() -> None:
+    # Given: a full-source artifact whose recorded pipeline version was changed.
+    live_bytes = execute(RunRequest("small tools", 1), ports(), source_mode="full-source").to_bytes()
+    mismatched = live_bytes.replace(b'"pipeline":"pipeline-v1"', b'"pipeline":"pipeline-v0"')
 
-    # When: replay executes from the port responses.
-    replayed = replay(corrupted)
+    # When: a replay asks this release to run the recorded engine.
+    with pytest.raises(EngineVersionMismatch, match="pipeline version mismatch"):
+        replay(mismatched)
 
-    # Then: the derived output returns to the live run's bytes.
-    assert corrupted != live_bytes
-    assert replayed.to_bytes() == live_bytes
+
+def test_finalized_artifact_rejects_every_mutation_path() -> None:
+    # Given: execution has finalized its mutable collection and pipeline builders.
+    artifact = execute(RunRequest("small tools", 1), ports())
+
+    # When/Then: all mutable collections named by the regression report reject mutation.
+    with pytest.raises(AttributeError):
+        artifact.collection.candidates.clear()
+    with pytest.raises(AttributeError):
+        artifact.result.reviewed.append(artifact.result.reviewed[0])
+    with pytest.raises(AttributeError):
+        artifact.result.reviewed[0].signals.append(None)
+    with pytest.raises(AttributeError):
+        artifact.model_smoke.failures.append("corrupt")
+
+
+def test_default_artifact_records_digests_not_source_bodies_and_versions_round_trip() -> None:
+    # Given: one source body that must not be copied into a default artifact.
+    body = "secret = 'do-not-export'\n"
+    artifact = execute(
+        RunRequest("small tools", 1),
+        RunPorts(Repository(), FilesWithBody(body), Model(), Clock()),
+    )
+
+    # When: the artifact crosses its serialization boundary.
+    serialized = artifact.to_bytes()
+    loaded = render(serialized)
+
+    # Then: source is reduced to a digest while engine provenance is retained.
+    assert body.encode() not in serialized
+    assert loaded.engines == artifact.engines
+    assert loaded.repositories[0].files is not None
+    assert loaded.repositories[0].files.mode == "digest"
+    assert loaded.repositories[0].files.files[0].sha256
+
+
+def test_source_storage_modes_require_explicit_full_source_opt_in() -> None:
+    # Given: one readable file with content unsuitable for normal artifact sharing.
+    body = "secret = 'do-not-export'\n"
+    run_ports = RunPorts(Repository(), FilesWithBody(body), Model(), Clock())
+
+    # When: callers choose the two non-default retention modes.
+    metadata_only = execute(RunRequest("small tools", 1), run_ports, source_mode="metadata-only")
+    full_source = execute(RunRequest("small tools", 1), run_ports, source_mode="full-source")
+
+    # Then: metadata omits the digest and only explicit full-source retains content.
+    assert metadata_only.repositories[0].files is not None
+    assert metadata_only.repositories[0].files.files[0].sha256 is None
+    assert metadata_only.repositories[0].files.files[0].excerpts == ()
+    assert metadata_only.repositories[0].files.files[0].content is None
+    assert full_source.repositories[0].files is not None
+    assert full_source.repositories[0].files.files[0].content == body
+    with pytest.raises(ValueError, match="cannot re-evaluate a digest artifact"):
+        replay(execute(RunRequest("small tools", 1), run_ports).to_bytes())
+
+
+class FilesWithBody(Files):
+    def __init__(self, body: str) -> None:
+        super().__init__()
+        self.body = body
+
+    def read(self, candidate: Candidate) -> FetchedFiles:
+        return FetchedFiles((("main.py", self.body),))
 
 
 def test_smoke_gate_runs_once_before_two_candidates_use_the_model() -> None:

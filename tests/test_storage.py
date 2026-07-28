@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from gitseed.application import execute, replay
-from gitseed.artifact import RunArtifact
+from gitseed.application import execute, re_evaluate, render
+from gitseed.artifact import ArtifactVersionError, RunArtifact
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
@@ -57,10 +57,11 @@ class Clock:
         return AT
 
 
-def artifact(files: Files | None = None) -> RunArtifact:
+def artifact(files: Files | None = None, *, source_mode: str = "digest") -> RunArtifact:
     return execute(
         RunRequest("small tools", 1),
         RunPorts(Repository(), files or Files(), Model(), Clock()),
+        source_mode=source_mode,
     )
 
 
@@ -94,17 +95,17 @@ def test_nonempty_older_schema_is_refused() -> None:
 def test_stored_artifact_round_trips_with_score_provenance(tmp_path) -> None:
     # Given: execution produced a complete artifact with a versioned, covered score.
     recorded = artifact()
-    direct_replay = replay(recorded.to_bytes())
+    direct_render = render(recorded.to_bytes())
     with SQLiteRunStore(tmp_path / "runs.db") as store:
         store.save("run-1", recorded)
 
-        # When: the record is loaded and replayed from SQLite.
+        # When: the record is loaded and rendered from SQLite.
         loaded = store.load("run-1")
-        replayed = store.replay("run-1")
+        rendered = render(store.load("run-1").to_bytes())
 
     # Then: canonical bytes and the score's version and coverage survive.
     assert loaded.to_bytes() == recorded.to_bytes()
-    assert replayed.to_bytes() == direct_replay.to_bytes() == recorded.to_bytes()
+    assert rendered.to_bytes() == direct_render.to_bytes() == recorded.to_bytes()
     assert loaded.scores[0].score.version == recorded.scores[0].score.version
     assert loaded.scores[0].score.coverage == frozenset(ALL_FEATURES)
 
@@ -128,20 +129,29 @@ def test_partial_artifact_and_correction_history_are_preserved(tmp_path) -> None
     assert loaded.to_bytes() == partial.to_bytes()
 
 
-def test_replaying_a_stored_artifact_recomputes_recorded_port_responses(tmp_path) -> None:
+def test_re_evaluating_a_full_source_stored_artifact_recomputes_recorded_port_responses(tmp_path) -> None:
     # Given: storage holds an artifact whose derived score was corrupted before saving.
-    recorded = artifact()
+    recorded = artifact(source_mode="full-source")
     corrupted = RunArtifact.from_bytes(
         recorded.to_bytes().replace(b'"value":"0.119096"', b'"value":"999"')
     )
     with SQLiteRunStore(tmp_path / "runs.db") as store:
         store.save("run-1", corrupted)
 
-        # When: the stored run is replayed offline.
-        replayed = store.replay("run-1")
+        # When: the stored run is explicitly re-evaluated offline.
+        replayed = re_evaluate(store.load("run-1").to_bytes())
 
     # Then: replay restores output by executing the recorded port responses.
     assert replayed.to_bytes() == recorded.to_bytes()
+
+
+def test_pre_change_artifact_fails_with_a_named_schema_version_mismatch() -> None:
+    # Given: bytes recorded by the schema immediately before this change.
+    previous_schema = artifact().to_bytes().replace(b'"schema":4', b'"schema":3')
+
+    # When/Then: loading refuses to silently reinterpret the old source shape.
+    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 3, current 4"):
+        RunArtifact.from_bytes(previous_schema)
 
 
 def test_stored_replay_has_no_external_writer_port() -> None:
