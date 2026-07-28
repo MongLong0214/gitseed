@@ -21,3 +21,27 @@ proving that the model can follow the output contract**.
 - [ ] Across 20 calls with the same input, `idea` and `skill` standard deviation is 0 (measured evidence: 7b sd=0.000)
 - [ ] Result rows contain model tag, temperature, and prompt version
 - [ ] Test that changing `description` to an arbitrary string does not change ranking order
+
+## Record status (2026-07-28)
+
+**Superseded by F6.** This PRD's "startup smoke test" requirement (1) is what F6
+(`gitseed/grade/smoke.py`, `run_smoke`, wired into `gitseed/application.py`'s `execute`) actually
+built, done better than described here: a model that is unreachable *or* unusable — wrong output
+shape, false positives on a known-clean sample, non-deterministic scores — degrades the run
+visibly (F2-only, `model coverage: absent`) instead of failing per-candidate the way this PRD's
+"five checks, startup integration" framing implied. Treat F6 as the current record for this
+requirement; this PRD is the historical target it grew from.
+
+**Model-tag caching (requirement 2, "cache the smoke result, rerun when the model tag changes"):
+ruled out.** No measured problem sits behind it — nobody has shown the smoke test's cost is worth
+avoiding on repeat runs. Nothing in this project ships on an unmeasured performance argument; see
+ADR-0007 (`docs/adr/ADR-0007-scoring-before-seam.md`) and this same PRD's own falsification
+standard applied elsewhere in this project. Revisit if a measurement shows the smoke test's
+repeated cost actually matters.
+
+The "larger deterministic sample" implied by requirement 2 is `grade/smoke.py`'s `CLEAN_SAMPLES =
+5`, chosen and justified by a specific false-positive-rate calculation in that module's comments,
+not by this PRD's unspecified "20 calls" figure (which requirement 2 of the AC above tests as
+call-repetition for the *determinism* check, a different measurement than sample count for the
+*clean-file false-positive* check). The two requirements were conflated here; F6's module comment
+is the current, measured record for sample count.

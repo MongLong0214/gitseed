@@ -24,6 +24,7 @@ from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
+from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions
 from .review.trailers import render_block
 from .scoring import ScoreInputs, WEIGHTS
 
@@ -503,6 +504,7 @@ def main(
     fetch_files: FetchFiles | None = None,
     grader: Grader | None = None,
     writer: GitHubWriter | None = None,
+    committer: GitCommitter | None = None,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
@@ -614,6 +616,14 @@ def main(
         block = render_block(approvals)
         if block:
             out.write(block)
+        active_committer = committer or SubprocessGitCommitter(Path.cwd())
+        try:
+            sha = record_decisions(approvals, active_committer)
+        except CommitFailed as error:
+            err.write(f"decision commit failed: {error}\n")
+            return 1
+        if sha is not None:
+            err.write(f"recorded decision commit {sha}\n")
         return 0
     except OSError as error:
         err.write(f"run failed: {error}\n")
