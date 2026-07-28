@@ -34,8 +34,9 @@ import subprocess
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
+from .actions import ActionOutcome
 from .approval import Approval, Decision
-from .trailers import render_block
+from .trailers import render_block, render_outcome
 
 
 class CommitFailed(RuntimeError):
@@ -52,6 +53,7 @@ class GitCommitter(Protocol):
 #: computed, it is the hash of zero entries — so a brand-new repository with no
 #: commits yet can still be given a root commit whose tree changes nothing.
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+_ZERO_OID = "0" * 40
 
 
 class SubprocessGitCommitter:
@@ -74,12 +76,14 @@ class SubprocessGitCommitter:
             parent = head.stdout.decode().strip()
             tree = self._require(self._git("rev-parse", f"{parent}^{{tree}}"), "could not resolve HEAD's tree")
             args = ["commit-tree", tree, "-p", parent]
+            expected_head = parent
         else:
             # No commits yet (or `repo` is not a repository at all — `commit-tree`
             # below reports that clearly rather than this guessing at the reason).
             args = ["commit-tree", _EMPTY_TREE]
+            expected_head = _ZERO_OID
         sha = self._require(self._git(*args, input=message.encode()), "git commit-tree failed")
-        self._require(self._git("update-ref", "HEAD", sha), "git update-ref failed")
+        self._require(self._git("update-ref", "HEAD", sha, expected_head), "git update-ref failed")
         return sha
 
     def _git(self, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
@@ -122,7 +126,15 @@ def record_decisions(
     return committer.commit(f"{_summary(approvals)}\n\n{block}")
 
 
+def record_outcome(outcome: ActionOutcome, committer: GitCommitter) -> str:
+    return committer.commit(
+        f"gitseed action outcome: {outcome.action} {outcome.status.value}\n\n"
+        f"{render_outcome(outcome)}"
+    )
+
+
 def _summary(approvals: Sequence[Approval]) -> str:
     approved = sum(1 for approval in approvals if approval.decision is not Decision.REJECT)
     rejected = len(approvals) - approved
-    return f"gitseed review: {approved} approved, {rejected} rejected"
+    pending = "; actions pending and may already have run" if approved else ""
+    return f"gitseed review intent: {approved} actions authorized, {rejected} rejected{pending}"

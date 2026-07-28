@@ -46,6 +46,28 @@ class FailingCommitter:
         raise CommitFailed("git refused")
 
 
+class RacingCommitter(SubprocessGitCommitter):
+    def __init__(self, repo: Path) -> None:
+        super().__init__(repo)
+        self.competing_sha = ""
+
+    def _git(self, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+        result = super()._git(*args, input=input)
+        if args[0] == "commit-tree" and result.returncode == 0 and not self.competing_sha:
+            competing = subprocess.run(
+                ["git", "-C", str(self.repo), "commit-tree", args[1]],
+                input=b"competing commit\n",
+                check=True,
+                capture_output=True,
+            )
+            self.competing_sha = competing.stdout.decode().strip()
+            subprocess.run(
+                ["git", "-C", str(self.repo), "update-ref", "HEAD", self.competing_sha],
+                check=True,
+            )
+        return result
+
+
 # --- structural: no path around the approval contract --------------------------
 
 
@@ -187,6 +209,23 @@ def test_subprocess_committer_fails_loudly_outside_a_git_repository(tmp_path: Pa
     committer = SubprocessGitCommitter(not_a_repo)
     with pytest.raises(CommitFailed):
         committer.commit("gitseed review: 1 approved, 0 rejected\n\nVerified: a\n")
+
+
+def test_subprocess_committer_does_not_overwrite_a_concurrent_commit(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    committer = RacingCommitter(repo)
+
+    with pytest.raises(CommitFailed):
+        committer.commit("gitseed review intent\n\nVerified: a\n")
+
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == committer.competing_sha
 
 
 @pytest.mark.skipif(not VALIDATOR.is_file(), reason="commitlore is unavailable at ~/projects/annals/dist/commitlore.mjs")

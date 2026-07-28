@@ -267,6 +267,22 @@ def test_a_block_carries_every_decision_including_the_rejections() -> None:
     assert "Ruled-out: b | 포크만 있다" in block
 
 
+def test_a_block_records_the_prompt_answer_and_approval_time() -> None:
+    approval = Approval(
+        target="octocat/hello",
+        decision=Decision.STAR,
+        prompt="display-snapshot-token\n[s]tar > ",
+        answer="s",
+        at=AT,
+    )
+
+    block = render_block([approval])
+
+    assert "prompt=display-snapshot-token [s]tar >" in block
+    assert "answer=s" in block
+    assert f"at={AT.isoformat()}" in block
+
+
 # --- AC-6: --approve-all -------------------------------------------------------
 
 

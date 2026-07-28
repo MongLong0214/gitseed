@@ -24,9 +24,9 @@ from .collect.search import Candidate, CollectResult, Transport, UrllibTransport
 from .grade.types import GradeResult
 from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
-from .review.actions import GitHubWriter, perform
+from .review.actions import ActionOutcome, GitHubWriter, OutcomeStatus, Performed, perform, undo
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
-from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions
+from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions, record_outcome
 from .review.trailers import render_block
 from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import ScoreInputs, WEIGHTS
@@ -740,20 +740,78 @@ def main(
         except NotInteractive as error:
             err.write(f"approval refused: {error}\n")
             return 1
-        for approval in approvals:
-            perform(active_writer, approval)
+        active_committer = committer or SubprocessGitCommitter(Path.cwd())
+        try:
+            intent_sha = record_decisions(approvals, active_committer)
+        except CommitFailed as error:
+            err.write(f"intent commit failed: {error}\n")
+            return 1
         block = render_block(approvals)
         if block:
             out.write(block)
-        active_committer = committer or SubprocessGitCommitter(Path.cwd())
-        try:
-            sha = record_decisions(approvals, active_committer)
-        except CommitFailed as error:
-            err.write(f"decision commit failed: {error}\n")
-            return 1
-        if sha is not None:
-            err.write(f"recorded decision commit {sha}\n")
-        return 0
+        if intent_sha is not None:
+            err.write(f"recorded intent commit {intent_sha}\n")
+
+        performed: list[Performed] = []
+        failed_at: int | None = None
+        for index, approval in enumerate(approvals):
+            try:
+                completed = perform(active_writer, approval)
+            except (OSError, RuntimeError) as error:
+                err.write(f"action failed: {approval.decision.value} {approval.target}: {error}\n")
+                try:
+                    record_outcome(
+                        ActionOutcome(approval, OutcomeStatus.CALL_FAILED, str(error)),
+                        active_committer,
+                    )
+                except CommitFailed as commit_error:
+                    err.write(f"outcome commit failed; intent remains pending: {commit_error}\n")
+                failed_at = index
+                break
+            performed.extend(completed)
+            try:
+                for action in completed:
+                    record_outcome(
+                        ActionOutcome(action.approval, OutcomeStatus.SUCCEEDED),
+                        active_committer,
+                    )
+            except CommitFailed as error:
+                err.write(f"outcome commit failed; intent remains pending: {error}\n")
+                failed_at = index
+                break
+
+        if failed_at is None:
+            return 0
+
+        for approval in approvals[failed_at + 1:]:
+            if approval.decision is Decision.REJECT:
+                continue
+            try:
+                record_outcome(
+                    ActionOutcome(approval, OutcomeStatus.NOT_ATTEMPTED),
+                    active_committer,
+                )
+            except CommitFailed as error:
+                err.write(f"outcome commit failed; intent remains pending: {error}\n")
+
+        for action in reversed(performed):
+            try:
+                undo(active_writer, action)
+            except (OSError, RuntimeError) as error:
+                status = OutcomeStatus.COMPENSATION_FAILED
+                detail = str(error)
+                err.write(f"compensation failed: {action.action} {action.target}: {error}\n")
+            else:
+                status = OutcomeStatus.COMPENSATED
+                detail = ""
+            try:
+                record_outcome(
+                    ActionOutcome(action.approval, status, detail),
+                    active_committer,
+                )
+            except CommitFailed as error:
+                err.write(f"compensation outcome commit failed; intent remains pending: {error}\n")
+        return 1
     except OSError as error:
         # Check if this is a timeout error and provide actionable guidance
         if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
