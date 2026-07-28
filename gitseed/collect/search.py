@@ -6,7 +6,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol, Sequence
 from urllib.parse import urlencode
 from warnings import warn
@@ -23,7 +23,7 @@ class Candidate:
     pushed_at: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class CollectResult:
     """Candidates, and an honest account of why there are not more.
 
@@ -32,12 +32,15 @@ class CollectResult:
     found twelve and was then cut off.
     """
 
-    candidates: list[Candidate] = field(default_factory=list)
+    candidates: tuple[Candidate, ...] = ()
     complete: bool = True
     stopped_because: str | None = None
     pages_fetched: int = 0
     total_count: int | None = None
     search_incomplete: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "candidates", tuple(self.candidates))
 
     @property
     def complete_for_search(self) -> bool:
@@ -134,7 +137,12 @@ def collect(
     library call is a decision for the caller, not for us. Either way the result
     says what happened.
     """
-    result = CollectResult()
+    candidates: list[Candidate] = []
+    complete = True
+    stopped_because: str | None = None
+    pages_fetched = 0
+    total_count: int | None = None
+    search_incomplete = False
     seen: set[str] = set()
 
     for page in range(1, pages + 1):
@@ -148,14 +156,12 @@ def collect(
             limit: RateLimit = parse(headers)
             reset_seconds = limit.seconds_until_reset(now())
             stopped_because = (
-                f"rate limited after {result.pages_fetched} page(s); resets in {reset_seconds:.0f}s"
+                f"rate limited after {pages_fetched} page(s); resets in {reset_seconds:.0f}s"
             )
             if reset_seconds > MAX_WAIT_SECONDS:
                 stopped_because += f"; retry wait capped at {MAX_WAIT_SECONDS:.0f}s"
             if not wait:
-                result.complete = False
-                result.stopped_because = stopped_because
-                return result
+                return CollectResult(tuple(candidates), False, stopped_because, pages_fetched, total_count, search_incomplete)
             if reset_seconds > MAX_WAIT_SECONDS:
                 warn(
                     f"rate limit wait capped at {MAX_WAIT_SECONDS:.0f}s; "
@@ -166,31 +172,25 @@ def collect(
             sleep(min(reset_seconds, MAX_WAIT_SECONDS))
             status, headers, body = transport.get(url)
             if classify(status, headers) != "ok":
-                result.complete = False
-                result.stopped_because = f"{stopped_because}; still rate limited after waiting"
-                return result
+                return CollectResult(tuple(candidates), False, f"{stopped_because}; still rate limited after waiting", pages_fetched, total_count, search_incomplete)
 
         elif kind == "forbidden":
-            result.complete = False
-            result.stopped_because = "forbidden — a permissions problem, not a budget one"
-            return result
+            return CollectResult(tuple(candidates), False, "forbidden — a permissions problem, not a budget one", pages_fetched, total_count, search_incomplete)
 
         elif kind == "error":
-            result.complete = False
-            result.stopped_because = f"HTTP {status}"
-            return result
+            return CollectResult(tuple(candidates), False, f"HTTP {status}", pages_fetched, total_count, search_incomplete)
 
-        items, search_incomplete, total_count = _parse_response(body)
+        items, page_incomplete, page_total_count = _parse_response(body)
         for candidate in items:
             if candidate.repo not in seen:
                 seen.add(candidate.repo)
-                result.candidates.append(candidate)
-        result.pages_fetched += 1
-        result.search_incomplete = result.search_incomplete or search_incomplete
-        if total_count is not None:
-            result.total_count = total_count
+                candidates.append(candidate)
+        pages_fetched += 1
+        search_incomplete = search_incomplete or page_incomplete
+        if page_total_count is not None:
+            total_count = page_total_count
 
         if len(items) < per_page:
             break  # last page
 
-    return result
+    return CollectResult(tuple(candidates), complete, stopped_because, pages_fetched, total_count, search_incomplete)

@@ -11,7 +11,7 @@ from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
 from gitseed.grade.smoke import SmokeResult
 from gitseed.grade.types import GradeResult
-from gitseed.pipeline.run import FetchedFiles
+from gitseed.pipeline.run import FetchedFiles, PipelineResult, Reviewed
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
 from gitseed.scoring import ALL_FEATURES, ScoreInputs
 
@@ -95,7 +95,7 @@ def test_replay_requires_the_recorded_engine_version() -> None:
     mismatched = live_bytes.replace(b'"pipeline":"pipeline-v1"', b'"pipeline":"pipeline-v0"')
 
     # When: a replay asks this release to run the recorded engine.
-    with pytest.raises(EngineVersionMismatch, match="pipeline version mismatch"):
+    with pytest.raises(EngineVersionMismatch, match="pipeline engine changed"):
         replay(mismatched)
 
 
@@ -112,6 +112,27 @@ def test_finalized_artifact_rejects_every_mutation_path() -> None:
         artifact.result.reviewed[0].signals.append(None)
     with pytest.raises(AttributeError):
         artifact.model_smoke.failures.append("corrupt")
+
+
+def test_runtime_results_reject_every_mutation_path() -> None:
+    # Given: each result has crossed the boundary where it is returned to a caller.
+    candidate = CANDIDATE
+    reviewed = Reviewed(candidate, [], "none", None)
+    collected = CollectResult(candidates=[candidate])
+    pipeline = PipelineResult(reviewed=[reviewed], incomplete_because=["partial"])
+    smoke = SmokeResult(False, "fixture", ["failed"])
+
+    # When/Then: each collection that frozen results expose rejects mutation.
+    with pytest.raises(AttributeError):
+        collected.candidates.append(candidate)
+    with pytest.raises(AttributeError):
+        pipeline.reviewed.append(reviewed)
+    with pytest.raises(AttributeError):
+        pipeline.incomplete_because.append("later")
+    with pytest.raises(AttributeError):
+        reviewed.signals.append(None)
+    with pytest.raises(AttributeError):
+        smoke.failures.append("later")
 
 
 def test_default_artifact_records_digests_not_source_bodies_and_versions_round_trip() -> None:

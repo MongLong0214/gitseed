@@ -14,7 +14,7 @@ reviewer approves against a picture that was never true.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from ..collect.search import Candidate, CollectResult
@@ -30,7 +30,7 @@ class Reviewed:
     """One candidate, carried through every stage with what each stage found."""
 
     candidate: Candidate
-    signals: list[Signal]
+    signals: tuple[Signal, ...]
     severity: str
     grade: GradeResult | None
     #: Why this candidate never reached grading. `None` means it did.
@@ -41,6 +41,9 @@ class Reviewed:
     #: `None` when the file source did not model coverage (fixtures, or no
     #: files were ever fetched). Present for every live GitHub adapter read.
     coverage: SourceCoverage | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "signals", tuple(self.signals))
 
     @property
     def findings(self) -> tuple[Signal, ...]:
@@ -64,22 +67,41 @@ class Reviewed:
         return None if self.grade is None else self.grade.idea + self.grade.skill
 
 
-@dataclass
+@dataclass(frozen=True)
 class PipelineResult:
-    reviewed: list[Reviewed] = field(default_factory=list)
+    reviewed: tuple[Reviewed, ...] = ()
     #: True only when every stage finished. Never inferred from a non-empty list.
     complete: bool = True
     #: One line per stage that stopped early, in the order they happened.
-    incomplete_because: list[str] = field(default_factory=list)
+    incomplete_because: tuple[str, ...] = ()
     rate_limited: bool = False
     grading_basis: ClaimBasis = ClaimBasis.MODEL
 
-    def mark_incomplete(self, why: str) -> None:
-        self.complete = False
-        if why.endswith(" metadata rate limited"):
-            self.rate_limited = True
-        if why not in self.incomplete_because:
-            self.incomplete_because.append(why)
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reviewed", tuple(self.reviewed))
+        object.__setattr__(self, "incomplete_because", tuple(self.incomplete_because))
+
+    def with_incomplete(self, why: str) -> PipelineResult:
+        # A metadata-phase quota exhaustion has to reach `rate_limited`, or the
+        # token guidance stays silent for it while firing for a search-phase one.
+        rate_limited = self.rate_limited or why.endswith(" metadata rate limited")
+        if why in self.incomplete_because:
+            if rate_limited == self.rate_limited:
+                return self
+            return PipelineResult(
+                self.reviewed,
+                self.complete,
+                self.incomplete_because,
+                rate_limited,
+                self.grading_basis,
+            )
+        return PipelineResult(
+            self.reviewed,
+            False,
+            (*self.incomplete_because, why),
+            rate_limited,
+            self.grading_basis,
+        )
 
 
 #: `high` never reaches a model. Sending a repository that scans as malicious to
@@ -124,12 +146,17 @@ def run(
     candidate rather than ending the run. One unreachable repository is not a
     reason to discard the nine that were fine.
     """
-    result = PipelineResult(
-        grading_basis=ClaimBasis.MODEL if grader is not None else ClaimBasis.ABSENT
-    )
+    reviewed: list[Reviewed] = []
+    incomplete_because: list[str] = []
+    rate_limited = False
+    grading_basis = ClaimBasis.MODEL if grader is not None else ClaimBasis.ABSENT
+
+    def mark_incomplete(why: str) -> None:
+        if why not in incomplete_because:
+            incomplete_because.append(why)
 
     if not collected.complete:
-        result.mark_incomplete(
+        mark_incomplete(
             f"collection stopped early: {collected.stopped_because or 'reason not recorded'}"
         )
 
@@ -137,11 +164,11 @@ def run(
         try:
             fetched = fetch_files(candidate)
         except FileFetchError as error:
-            result.mark_incomplete(error.run_reason or f"{candidate.repo}: could not read files ({error})")
-            result.rate_limited = result.rate_limited or error.rate_limited
+            mark_incomplete(error.run_reason or f"{candidate.repo}: could not read files ({error})")
+            rate_limited = rate_limited or error.rate_limited
             if on_survivor is not None:
                 on_survivor(candidate)
-            result.reviewed.append(
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=[],
@@ -152,10 +179,10 @@ def run(
             )
             continue
         except Exception as error:  # noqa: BLE001 — one repository, not the run
-            result.mark_incomplete(f"{candidate.repo}: could not read files ({error})")
+            mark_incomplete(f"{candidate.repo}: could not read files ({error})")
             if on_survivor is not None:
                 on_survivor(candidate)
-            result.reviewed.append(
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=[],
@@ -178,8 +205,8 @@ def run(
             coverage = None
 
         if not source_complete:
-            result.mark_incomplete(fetched.incomplete_because or f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
-            result.rate_limited = result.rate_limited or fetched.rate_limited
+            mark_incomplete(fetched.incomplete_because or f"{candidate.repo}: skipped unreadable files ({'; '.join(skipped)})")
+            rate_limited = rate_limited or fetched.rate_limited
 
         if not files:
             reason = "no readable source files"
@@ -187,7 +214,7 @@ def run(
                 reason += f" ({'; '.join(skipped)})"
             if on_survivor is not None:
                 on_survivor(candidate)
-            result.reviewed.append(
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=[],
@@ -205,7 +232,7 @@ def run(
         screened_files = tuple(path for path, _ in files)
 
         if severity == BLOCKING_SEVERITY:
-            result.reviewed.append(
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=signals,
@@ -224,7 +251,7 @@ def run(
             on_survivor(candidate)
 
         if grader is None:
-            result.reviewed.append(
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=signals,
@@ -242,8 +269,8 @@ def run(
         try:
             grade = grader.evaluate(_digest(candidate, files))
         except Exception as error:  # noqa: BLE001
-            result.mark_incomplete(f"{candidate.repo}: grading failed ({error})")
-            result.reviewed.append(
+            mark_incomplete(f"{candidate.repo}: grading failed ({error})")
+            reviewed.append(
                 Reviewed(
                     candidate=candidate,
                     signals=signals,
@@ -258,7 +285,7 @@ def run(
             )
             continue
 
-        result.reviewed.append(
+        reviewed.append(
             Reviewed(
                 candidate=candidate,
                 signals=signals,
@@ -271,7 +298,7 @@ def run(
             )
         )
 
-    return result
+    return PipelineResult(tuple(reviewed), not incomplete_because, tuple(incomplete_because), rate_limited, grading_basis)
 
 
 def _digest(candidate: Candidate, files: Sequence[tuple[str, str]]) -> str:

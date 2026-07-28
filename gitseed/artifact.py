@@ -50,7 +50,7 @@ class EngineVersionMismatch(ValueError):
     current: str
 
     def __str__(self) -> str:
-        return f"{self.engine} version mismatch: recorded {self.recorded}, current {self.current}"
+        return f"{self.engine} engine changed: recorded {self.recorded}, current {self.current}"
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.

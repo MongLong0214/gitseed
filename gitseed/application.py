@@ -113,22 +113,22 @@ def execute(
     result = run(collected, fetch_files=read, grader=model, on_survivor=observe_metadata)
 
     if smoke.passed is False:
-        result.mark_incomplete(
+        result = result.with_incomplete(
             "model smoke gate failed: "
             + ("; ".join(smoke.failures) or "model returned no usable answer")
         )
 
     if started_at is None:
-        result.mark_incomplete("clock failed; repository metadata was not read")
+        result = result.with_incomplete("clock failed; repository metadata was not read")
     for candidate in collected.candidates:
         if candidate.repo not in metadata_attempted:
             continue
         observed = metadata[candidate.repo]
         if observed is None:
-            result.mark_incomplete(f"{candidate.repo}: repository metadata failed")
+            result = result.with_incomplete(f"{candidate.repo}: repository metadata failed")
         else:
             for reason in observed.incomplete_because:
-                result.mark_incomplete(reason)
+                result = result.with_incomplete(reason)
 
     scored = []
     for reviewed in result.reviewed:
@@ -211,18 +211,24 @@ def render(data: bytes) -> RunArtifact:
 
 
 def replay(data: bytes) -> RunArtifact:
-    """Re-run recorded inputs only when this release has the recorded engine."""
+    """Recompute recorded responses only when engine versions match."""
     source = render(data)
-    for engine in ("pipeline", "screening", "source_selection", "category_packs"):
-        recorded = getattr(source.engines, engine)
-        current = getattr(ENGINE_VERSIONS, engine)
-        if recorded != current:
-            raise EngineVersionMismatch(engine, recorded, current)
+    mismatches = engine_version_mismatches(source)
+    if mismatches:
+        raise mismatches[0]
     return re_evaluate(data)
 
 
+def engine_version_mismatches(artifact: RunArtifact) -> tuple[EngineVersionMismatch, ...]:
+    return tuple(
+        EngineVersionMismatch(engine, recorded, current)
+        for engine in ("pipeline", "screening", "source_selection", "category_packs")
+        if (recorded := getattr(artifact.engines, engine)) != (current := getattr(ENGINE_VERSIONS, engine))
+    )
+
+
 def re_evaluate(data: bytes) -> RunArtifact:
-    """Run stored full-source port responses through the current engine."""
+    """Recompute stored full-source port responses with current code."""
     source = render(data)
     _require_full_source(source)
     return execute(
@@ -233,7 +239,7 @@ def re_evaluate(data: bytes) -> RunArtifact:
             _ReplayModel(source),
             _ReplayClock(source),
         ),
-        model_smoke=SmokeResult(source.model_smoke.passed, source.model_smoke.model, list(source.model_smoke.failures)),
+        model_smoke=SmokeResult(source.model_smoke.passed, source.model_smoke.model, source.model_smoke.failures),
         source_mode="full-source",
     )
 

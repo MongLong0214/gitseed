@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import quote, urlencode
@@ -23,8 +24,7 @@ class GitHubRepository:
             pages=(limit + 99) // 100,
             per_page=min(limit, 100),
         )
-        result.candidates = result.candidates[:limit]
-        return result
+        return replace(result, candidates=result.candidates[:limit])
 
     def metadata(
         self,
