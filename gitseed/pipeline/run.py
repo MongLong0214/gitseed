@@ -76,6 +76,8 @@ class PipelineResult:
 
     def mark_incomplete(self, why: str) -> None:
         self.complete = False
+        if why.endswith(" metadata rate limited"):
+            self.rate_limited = True
         if why not in self.incomplete_because:
             self.incomplete_because.append(why)
 
