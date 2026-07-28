@@ -35,6 +35,16 @@ class CollectResult:
     complete: bool = True
     stopped_because: str | None = None
     pages_fetched: int = 0
+    total_count: int | None = None
+    search_incomplete: bool = False
+
+    @property
+    def complete_for_search(self) -> bool:
+        return (
+            self.complete
+            and not self.search_incomplete
+            and (self.total_count is None or len(self.candidates) >= self.total_count)
+        )
 
 
 class Transport(Protocol):
@@ -73,10 +83,13 @@ class UrllibTransport:
             return error.code, dict(error.headers), error.read()
 
 
-def _parse_items(body: bytes) -> list[Candidate]:
-    payload = json.loads(body or b"{}")
+def _parse_items(items: object) -> list[Candidate]:
     out: list[Candidate] = []
-    for item in payload.get("items", []):
+    if not isinstance(items, list):
+        return out
+    for item in items:
+        if not isinstance(item, dict):
+            continue
         full = item.get("full_name")
         if not isinstance(full, str) or "/" not in full:
             continue
@@ -90,6 +103,18 @@ def _parse_items(body: bytes) -> list[Candidate]:
             )
         )
     return out
+
+
+def _parse_response(body: bytes) -> tuple[list[Candidate], bool, int | None]:
+    payload = json.loads(body or b"{}")
+    if not isinstance(payload, dict):
+        return [], False, None
+    total_count = payload.get("total_count")
+    return (
+        _parse_items(payload.get("items", [])),
+        payload.get("incomplete" "_results") is True,
+        total_count if isinstance(total_count, int) and not isinstance(total_count, bool) else None,
+    )
 
 
 def collect(
@@ -144,12 +169,15 @@ def collect(
             result.stopped_because = f"HTTP {status}"
             return result
 
-        items = _parse_items(body)
+        items, search_incomplete, total_count = _parse_response(body)
         for candidate in items:
             if candidate.repo not in seen:
                 seen.add(candidate.repo)
                 result.candidates.append(candidate)
         result.pages_fetched += 1
+        result.search_incomplete = result.search_incomplete or search_incomplete
+        if total_count is not None:
+            result.total_count = total_count
 
         if len(items) < per_page:
             break  # last page

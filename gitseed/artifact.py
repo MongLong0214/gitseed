@@ -18,7 +18,7 @@ from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
 from .screen.verdict import findings, unverified
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SourceMode = Literal["metadata-only", "digest", "full-source"]
 
 
@@ -88,10 +88,27 @@ class ArtifactCollection:
     complete: bool
     stopped_because: str | None
     pages_fetched: int
+    total_count: int | None
+    incomplete_results: bool
+
+    @property
+    def complete_for_search(self) -> bool:
+        return (
+            self.complete
+            and not self.incomplete_results
+            and (self.total_count is None or len(self.candidates) >= self.total_count)
+        )
 
     @classmethod
     def from_collected(cls, collected: CollectResult) -> ArtifactCollection:
-        return cls(tuple(collected.candidates), collected.complete, collected.stopped_because, collected.pages_fetched)
+        return cls(
+            tuple(collected.candidates),
+            collected.complete,
+            collected.stopped_because,
+            collected.pages_fetched,
+            collected.total_count,
+            collected.search_incomplete,
+        )
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -298,6 +315,8 @@ def _collection_from_dict(payload: dict) -> ArtifactCollection:
         complete=bool(payload["complete"]),
         stopped_because=payload["stopped_because"],
         pages_fetched=int(payload["pages_fetched"]),
+        total_count=payload["total_count"],
+        incomplete_results=bool(payload["incomplete_results"]),
     )
 
 

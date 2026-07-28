@@ -147,10 +147,10 @@ def test_re_evaluating_a_full_source_stored_artifact_recomputes_recorded_port_re
 
 def test_pre_change_artifact_fails_with_a_named_schema_version_mismatch() -> None:
     # Given: bytes recorded by the schema immediately before this change.
-    previous_schema = artifact().to_bytes().replace(b'"schema":4', b'"schema":3')
+    previous_schema = artifact().to_bytes().replace(b'"schema":5', b'"schema":4')
 
     # When/Then: loading refuses to silently reinterpret the old source shape.
-    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 3, current 4"):
+    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 4, current 5"):
         RunArtifact.from_bytes(previous_schema)
 
 

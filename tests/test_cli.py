@@ -87,6 +87,47 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "fixture/malicious" in captured.out
     assert "withheld" in captured.out
     assert "insufficient-evidence" in captured.out
+    assert "candidate coverage: 3/3 search results (complete)" in captured.out
+
+
+def test_search_timeout_is_printed_and_preserved_in_the_artifact(tmp_path, capsys) -> None:
+    # Given: GitHub returns two candidates from a four-result search it timed out.
+    _write_fixture(tmp_path)
+    fixture = tmp_path / "candidates.json"
+    payload = json.loads(fixture.read_text())
+    payload.update({"incomplete_results": True, "total_count": 4})
+    fixture.write_text(json.dumps(payload))
+    artifact = tmp_path / "run.json"
+
+    # When: the normal dry-run path records and prints the result.
+    exit_code = main(
+        ["run", "--query", "example", "--fixtures", str(tmp_path), "--artifact", str(artifact)]
+    )
+
+    # Then: the visible candidate count and replayable record retain the timeout distinction.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "candidate coverage: 2/4 search results (partial: GitHub reported a partial search)" in captured.out
+    collection = json.loads(artifact.read_text())["ports"]["collection"]
+    assert collection["incomplete_results"] is True
+    assert collection["total_count"] == 4
+
+
+def test_cli_reports_a_total_larger_than_the_retrieved_candidates(tmp_path, capsys) -> None:
+    # Given: GitHub reports four matches while this run retrieved only two.
+    _write_fixture(tmp_path)
+    fixture = tmp_path / "candidates.json"
+    payload = json.loads(fixture.read_text())
+    payload["total_count"] = 4
+    fixture.write_text(json.dumps(payload))
+
+    # When: the CLI renders the dry-run result.
+    exit_code = main(["run", "--query", "example", "--fixtures", str(tmp_path)])
+
+    # Then: the count is visibly partial even though GitHub did not flag a timeout.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "candidate coverage: 2/4 search results (partial)" in captured.out
 
 
 def test_a_failed_model_smoke_gate_labels_the_run_and_artifact(tmp_path, capsys) -> None:
