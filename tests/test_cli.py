@@ -8,6 +8,8 @@ from base64 import b64encode
 from pathlib import Path
 
 from gitseed import cli
+from gitseed.application import execute
+from gitseed.artifact import RunArtifact, SCHEMA_VERSION
 from gitseed.cli import (
     SOURCE_FILE_BYTE_CAP,
     SOURCE_FILE_COUNT_CAP,
@@ -15,8 +17,12 @@ from gitseed.cli import (
     GitHubClient,
     main,
 )
+from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
+from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
+from gitseed.collect.search import Candidate, CollectResult
+from gitseed.scoring import ScoreInputs
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -79,6 +85,250 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "fixture/clean" in captured.out
     assert "fixture/malicious" in captured.out
     assert "withheld" in captured.out
+    assert "not recommended" in captured.out
+
+
+def test_a_failed_model_smoke_gate_labels_the_run_and_artifact(tmp_path, capsys) -> None:
+    # Given: identical deterministic inputs and one model that cannot keep its fields separate.
+    class UnusableGrader(_Grader):
+        def evaluate(self, digest: str) -> GradeResult:
+            self.seen.append(digest)
+            return GradeResult(7, 6, "WARNING: maybe unsafe", "test", 0.0, "v1")
+
+    full_artifact = tmp_path / "full.json"
+    degraded_artifact = tmp_path / "degraded.json"
+    options = ["run", "--query", "example"]
+
+    # When: each run reaches the same readable repository.
+    full_code = main(
+        [*options, "--artifact", str(full_artifact)],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+        grader=_Grader(),
+    )
+    full = capsys.readouterr()
+    degraded_code = main(
+        [*options, "--artifact", str(degraded_artifact)],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+        grader=UnusableGrader(),
+    )
+    degraded = capsys.readouterr()
+
+    # Then: deleting the coverage label or its artifact field makes this test fail.
+    assert full_code == 0
+    assert degraded_code == 2
+    assert "model coverage: model\n" in full.out
+    assert "model coverage: absent (deterministic-only)\n" in degraded.out
+    assert "model smoke gate failed" in degraded.err
+    payload = json.loads(degraded_artifact.read_text())
+    assert payload["output"]["result"]["grading_basis"] == "absent"
+    assert payload["ports"]["model_smoke"]["passed"] is False
+
+
+def test_an_unreachable_model_falls_back_to_a_labeled_deterministic_run(monkeypatch, capsys) -> None:
+    # Given: Ollama cannot answer the model discovery request.
+    class OfflineOllama:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(cli, "UrllibTransport", OfflineOllama)
+
+    # When: the normal CLI path starts a run.
+    exit_code = main(
+        ["run", "--query", "example"],
+        transport=_NoWriteTransport(),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+    )
+
+    # Then: removing resolution fallback makes this test fail instead of returning the incomplete run.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "model coverage: absent (deterministic-only)" in captured.out
+    assert "could not reach Ollama" in captured.err
+
+
+def test_radar_defaults_to_dry_run_before_any_approval_path() -> None:
+    # Given: the product command is invoked without an explicit write option.
+    args = cli._parser().parse_args(["radar", "--query", "example"])
+
+    # When/Then: approval collection is not reachable unless dry-run is disabled.
+    assert args.dry_run is True
+
+
+def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) -> None:
+    # Given: a fixture-backed run records one canonical artifact.
+    artifact = tmp_path / "run.json"
+    live_code = main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--artifact",
+            str(artifact),
+        ]
+    )
+    live = capsys.readouterr()
+
+    # When: the CLI replays only that artifact.
+    replay_code = main(["replay", str(artifact)])
+    replayed = capsys.readouterr()
+
+    # Then: replay performs no live I/O and renders the same result.
+    assert live_code == replay_code == 0
+    assert replayed.out == live.out
+    assert live.err == ""
+    assert replayed.err == "source: replayed artifact\n"
+
+
+def test_radar_replay_cannot_reach_approval_without_disabling_dry_run(tmp_path, monkeypatch, capsys) -> None:
+    # Given: a canonical artifact and an approval path that must stay untouched.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    monkeypatch.setattr(cli, "_approvals", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("approval reached")))
+
+    # When: radar runs normally and then renders the recorded queue.
+    radar_code = main(["radar", "--query", "example", "--fixtures", str(FIXTURES)])
+    exit_code = main(["radar", "--replay", str(artifact)])
+
+    # Then: it remains a read-only replay and says so.
+    captured = capsys.readouterr()
+    assert radar_code == exit_code == 0
+    assert "source: replayed artifact" in captured.err
+
+
+def test_every_command_help_documents_the_exit_code_convention() -> None:
+    # Given: every public command parser.
+    parser = cli._parser()
+
+    # When/Then: help gives one shared meaning to its process status.
+    for command in ("radar", "run", "replay", "explain", "export"):
+        help_text = parser._subparsers._group_actions[0].choices[command].format_help()
+        assert " ".join(cli.EXIT_CODES.split()) in " ".join(help_text.split())
+
+
+def test_explain_names_unavailable_features_and_weight_version(tmp_path, capsys) -> None:
+    # Given: fixture metadata has no score inputs, so every feature is unavailable.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: an operator asks why the graded repository was scored.
+    exit_code = main(["explain", "fixture/clean", "--artifact", str(artifact)])
+
+    # Then: unavailable inputs are named rather than silently counted as zero.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "weight set: m0-contributions-v1" in captured.out
+    assert "unavailable features: commit_cadence_30d, contributor_count, has_license" in captured.out
+    assert "source: replayed artifact" in captured.err
+
+
+def test_coverage_reaches_explain_and_export(tmp_path, capsys) -> None:
+    # Given: the fixture has readable source but unavailable score metadata.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: a human explains it and a program exports it.
+    assert main(["explain", "fixture/clean", "--artifact", str(artifact)]) == 0
+    explained = capsys.readouterr()
+    assert main(["export", str(artifact)]) == 0
+    exported = json.loads(capsys.readouterr().out)
+
+    # Then: both surfaces retain score and security evidence coverage.
+    assert "score coverage: 0/3" in explained.out
+    assert "security coverage: deterministic (a_logger.py" in explained.out
+    score = exported["output"]["scores"][0]["score"]
+    reviewed = exported["output"]["result"]["reviewed"][0]
+    assert score["basis"] == "absent"
+    assert score["coverage"] == []
+    assert reviewed["screening_basis"] == "deterministic"
+    assert reviewed["screened_files"] == [
+        "a_logger.py",
+        "b_setup.sh",
+        "c_package.json",
+        "d_client.py",
+        "e_hash.py",
+        "f_config.py",
+        "g_readme.md",
+        "h_docker.sh",
+        "i_key.py",
+        "j_ci.yml",
+    ]
+
+
+def test_every_failed_read_reports_zero_coverage_not_a_clean_run(tmp_path, capsys) -> None:
+    # Given: collection succeeds but the sole repository's source read fails.
+    candidate = Candidate("org/unreadable", "org", "", 0, "")
+
+    class Repository:
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[candidate])
+
+        def metadata(self, item: Candidate, at) -> RepositoryMetadata:
+            return RepositoryMetadata(ScoreInputs(True, True, True))
+
+    class Files:
+        def read(self, item: Candidate) -> FetchedFiles:
+            raise OSError("offline")
+
+    class Clock:
+        def now(self):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 27, tzinfo=timezone.utc)
+
+    artifact = tmp_path / "failed-reads.json"
+    artifact.write_bytes(execute(RunRequest("example", 1), RunPorts(Repository(), Files(), _Grader(), Clock())).to_bytes())
+
+    # When: an operator explains the recorded run.
+    exit_code = main(["explain", "org/unreadable", "--artifact", str(artifact)])
+
+    # Then: no finding is never rendered as clean when coverage is absent.
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == (
+        "Score measures small-versus-medium size; it does not predict that a repository will take off.\n"
+        "repository: org/unreadable\n"
+        "weight set: m0-contributions-v1\n"
+        "score: 0.119096\n"
+        "commit_cadence_30d: 0.093318\n"
+        "contributor_count: 0.016129\n"
+        "has_license: 0.009649\n"
+        "score coverage: 3/3\n"
+        "unavailable features: none\n"
+        "security coverage: absent (0 files)\n"
+        "model coverage: model\n"
+        "security findings: none\n"
+        "unverified security claims: none\n"
+        "risk: unknown\n"
+        "recommendation: review\n"
+    )
+    assert "org/unreadable: could not read files (offline)\n" in captured.err
+
+
+def test_export_writes_the_canonical_versioned_artifact_and_round_trips(tmp_path, capsys) -> None:
+    # Given: radar recorded one canonical run artifact.
+    artifact = tmp_path / "run.json"
+    assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
+    capsys.readouterr()
+
+    # When: export writes that run for a machine consumer.
+    exit_code = main(["export", str(artifact)])
+
+    # Then: the unchanged artifact schema is versioned and parseable.
+    captured = capsys.readouterr()
+    exported = captured.out.encode()
+    assert exit_code == 0
+    assert json.loads(exported)["schema"] == SCHEMA_VERSION
+    assert RunArtifact.from_bytes(exported).to_bytes() == exported
+    assert "source: replayed artifact" in captured.err
 
 
 def test_an_incomplete_collection_exits_two_after_printing_the_ranking(tmp_path, capsys) -> None:
@@ -165,7 +415,7 @@ class _Grader:
         return GradeResult(idea=7, skill=6, description="d", model="test", temperature=0.0, prompt_version="v1")
 
     def flags_malicious(self, digest: str) -> bool:
-        return False
+        return "base64.b64decode" in digest
 
 
 class _GitHubTransport:
@@ -304,16 +554,31 @@ def test_github_names_secondary_limiting_for_a_retry_after_response() -> None:
 
 
 def test_github_names_forbidden_access_as_not_waitable() -> None:
-    # Given: GitHub refuses a tree request without any rate-limit signal.
-    transport = _GitHubTransport([], {}, tree_response=(403, {}))
+    # Given: GitHub refuses a tree request with quota left and no Retry-After --
+    # issue #6's real, live-verified shape (2026-07-28, GET
+    # repos/torvalds/linux/collaborators through gitseed's own UrllibTransport):
+    # HTTP 403, X-RateLimit-Remaining in the thousands, no Retry-After header,
+    # body {"message": "Must have push access...", "status": "403"}. Budget-left
+    # headers (not the empty ones a synthetic 403 might use) are what actually
+    # distinguish this from the rate-limited branch in classify().
+    real_forbidden_headers = {"X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "4900"}
+    transport = _GitHubTransport([], {}, tree_response=(403, real_forbidden_headers))
     # When: the candidate reaches file collection.
     result = cli.run(
         cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
         fetch_files=GitHubClient(transport).fetch_files,
         grader=_Grader(),
     )
-    # Then: the withheld reason does not suggest a futile wait.
-    assert "waiting will not help" in (result.reviewed[0].withheld or "")
+    # Then: the withheld reason does not suggest a futile wait, and the absence of
+    # evidence is recorded as absent -- not as "none" (a clean scan) and not as a
+    # falsy-but-present score. This is F11's discipline reaching the collection
+    # layer: a resource that could not be read is not a resource that had nothing.
+    entry = result.reviewed[0]
+    assert "waiting will not help" in (entry.withheld or "")
+    assert entry.severity == "unknown"
+    assert entry.screening_basis is ClaimBasis.ABSENT
+    assert entry.score is None
+    assert result.complete is False
 
 
 def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -> None:
@@ -323,13 +588,13 @@ def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     errors = io.StringIO()
     # When: an unauthenticated run stops for the exhausted quota.
-    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b""), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
     # Then: it gets the one actionable next step.
     assert "set GITHUB_TOKEN" in errors.getvalue()
 
     monkeypatch.setenv("GITHUB_TOKEN", "set")
     errors = io.StringIO()
-    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b""), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
     assert "set GITHUB_TOKEN" not in errors.getvalue()
 
 
@@ -371,7 +636,9 @@ def test_grade_timeout_is_passed_to_the_ollama_transport(monkeypatch) -> None:
             return 200, {}, json.dumps({"models": [{"name": "qwen2.5-coder:32b"}]}).encode()
 
         def request(self, method: str, url: str, data=None, extra_headers=None) -> tuple[int, dict[str, str], bytes]:
-            return 200, {}, json.dumps({"response": json.dumps({"idea": 7, "skill": 6, "description": "d"})}).encode()
+            prompt = json.loads(data)["prompt"]
+            response = {"malicious": "base64.b64decode" in prompt} if "boolean malicious" in prompt else {"idea": 7, "skill": 6, "description": "d"}
+            return 200, {}, json.dumps({"response": json.dumps(response)}).encode()
 
     monkeypatch.setattr(cli, "UrllibTransport", OllamaTransport)
     # When: the operator changes the grade timeout.
@@ -420,8 +687,8 @@ def test_json_includes_every_candidate_and_its_withheld_reason(capsys) -> None:
     # Then: callers can distinguish a missing score from an omitted record.
     records = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert [record["repo"] for record in records] == ["fixture/clean", "fixture/malicious"]
-    assert records[1]["withheld"]
+    assert [record["repo"] for record in records] == ["fixture/clean", "fixture/second", "fixture/malicious"]
+    assert records[2]["withheld"]
 
 
 def test_bulk_approval_refuses_non_interactive_stdin(tmp_path, capsys) -> None:

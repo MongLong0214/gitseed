@@ -1,88 +1,90 @@
-# Phase 0 — 씨앗 접수 (오너 답변, 2026-07-26)
+> Superseded by [ADR-0006](adr/ADR-0006-no-unattended-external-writes.md); retained unchanged as the historical record.
+# Phase 0 — Seed intake (owner answers, 2026-07-26)
 
-> 이 파일은 오너 게이트의 산출물이다. 10일에 걸친 작업이므로 세션 메모리가 아니라
-> 디스크에 남긴다. **이 답을 바꾸려면 오너에게 다시 물어야 한다.**
+> This file is the output of the owner gate. Because the work spans 10 days, keep it on
+> disk rather than in session memory. **Changing these answers requires asking the owner again.**
 
-## 씨앗
+## Seed
 
-`https://github.com/yumiaura/followme` — Python CLI, 993줄 / 12파일, 60 스타.
-GitHub Search로 레포 수집 → 로컬 Ollama로 채점(idea·skill·description + malware
-verdict) → 점수 넘으면 저자 팔로우·레포 스타. SQLite 단일 파일, 서버 없음.
+`https://github.com/yumiaura/followme` — Python CLI, 993 lines / 12 files, 60 stars.
+Collect repositories through GitHub Search → grade with local Ollama (idea, skill, description + malware
+verdict) → follow the author and star the repository above a score threshold. Single SQLite file, no server.
 
-## 필수 질문 4가지 — 답변
+## 4 required questions — answers
 
-| 질문 | 답 |
+| Question | Answer |
 |---|---|
-| **프로젝트 성격** | **followme 엔터프라이즈 재구축** — 같은 문제(로컬 LLM 레포 큐레이션)를 제대로 다시 짓는다 |
-| **수익 모델** | **무료 영구** — MIT, 유료 티어·서버·텔레메트리 없음 (CommitLore와 동일 노선) |
-| **공개 여부** | **처음부터 public** — 창세부터 공개 저장소, 히스토리 전체가 증거 |
-| **오리지널리티** | 아래 3항목 (오너 다중 선택) |
+| **Project type** | **Enterprise rebuild of followme** — properly rebuild the same problem (local-LLM repository curation) |
+| **Revenue model** | **Free forever** — MIT, no paid tier, server, or telemetry (same direction as CommitLore) |
+| **Visibility** | **Public from the beginning** — public repository from genesis, with the entire history as evidence |
+| **Originality** | 3 items below (owner multiple choice) |
 
-## 오리지널리티 — 반드시 씨앗과 달라야 하는 것
+## Originality — what must differ from the seed
 
-1. **이름·브랜딩 완전 분리** — followme와 무관한 새 이름. PyPI/GitHub 가용성을
-   실측한 뒤 결정한다(ADR-0009 절차 준용).
-2. **채점을 결정적·재현 가능하게** — 씨앗의 최대 약점. 같은 레포가 같은 점수를
-   받아야 한다. 불가능하면 비결정성을 *측정해서* 신뢰구간으로 보고한다.
-   CommitLore의 "숫자 아니면 침묵"과 같은 원칙.
-3. **악성코드 판정을 LLM 단독에 맡기지 않음** — 오탐/미탐 비용이 비대칭인데 씨앗은
-   근거가 없다. 결정적 신호(의존성·네트워크 호출·난독화)와 결합한다.
+1. **Fully separate name and branding** — a new name unrelated to followme. Decide after
+   measuring availability on PyPI/GitHub (follow the ADR-0009 procedure).
+2. **Make grading deterministic and reproducible** — the seed's greatest weakness. The same repository
+   must receive the same score. If impossible, *measure* nondeterminism and report it as a confidence interval.
+   The same principle as CommitLore's "numbers or silence."
+3. **Do not leave malware classification to an LLM alone** — false-positive and false-negative costs
+   are asymmetric, and the seed has no evidence. Combine with deterministic signals (dependencies, network calls, obfuscation).
 
-## 선택되지 않은 항목 — 기록
+## Unselected item — record
 
-**"자동 행동(팔로우·스타)에 사람 게이트"는 선택되지 않았다.**
+**"Human gate for automatic actions (follow and star)" was not selected.**
 
-다중 선택에서 고르지 않은 것은 "필수 차별점이 아니다"라는 뜻이므로, 씨앗의 자동
-행동을 유지한다.
+Not choosing it in the multiple choice means "it is not a required differentiator," so retain
+the seed's automatic actions.
 
-> ⚠️ **정정**: 나는 여기에 "`--dry-run`을 플래그로 제공하겠다"고 개선점처럼 적었다.
-> **씨앗에 이미 있다** — `libs/settings.py:74`의 `DRY_RUN` 환경변수,
-> `scripts/subscribe.py`의 `--dry-run` 인자, `db.unfollowed_above`/`unstarred_above`
-> 조회. clone을 읽기 전에 개선점을 발명한 것이고, 불변식 1 위반이다. 두 번째다.
-> 결정 이력이므로 지우지 않는다.
+> ⚠️ **Correction**: I wrote here that I would "provide `--dry-run` as a flag," as if it were an improvement.
+> **The seed already has it** — the `DRY_RUN` environment variable in `libs/settings.py:74`,
+> the `--dry-run` argument in `scripts/subscribe.py`, and the `db.unfollowed_above`/`unstarred_above`
+> queries. I invented an improvement before reading the clone, violating invariant 1. This was the second time.
+> Do not delete it; it is decision history.
 
-실제로 남는 과제는 다르다: 외부 행동의 **감사 로그**가 없다. 무엇을 언제 왜
-팔로우/스타했는지가 DB의 플래그로만 남고, 판정 근거는 사라진다. 되돌림 쿼리는
-있으나 되돌림 *명령*은 없다.
+The actual remaining problem differs: there is no **audit log** for external actions. What was
+followed/starred, when, and why remains only as DB flags, while the decision evidence disappears.
+Reversal queries exist, but there is no reversal *command*.
 
-## 씨앗의 실측 약점 (Phase 1 입력)
+## Measured weaknesses of the seed (Phase 1 input)
 
-clone 후 직접 확인:
+Confirmed directly after clone:
 
-- **테스트 0개, CI 0개** — clone 후 확인. 확정.
-- **SQLite 마이그레이션**: `add_missing_columns`로 **멱등 컬럼 추가는 있다**. 주석도
-  정확하다(`CREATE TABLE IF NOT EXISTS`가 기존 테이블을 바꾸지 않는다는 것). 없는
-  것은 `user_version` 추적·순서 있는 마이그레이션·타입 변경·데이터 백필 경로다.
-  > ⚠️ 이 항목의 최초 기재는 "마이그레이션 없음"이었고 **틀렸다.** clone 전 추정으로
-  > 쓴 것이다. 불변식 1 위반이었고 정정한다. 결정 이력이므로 지우지 않는다.
-- **Ollama 판정 비결정성**: `temperature: 0.1`, `format: json`, **`seed` 파라미터
-  없음** → 비결정적이다. 다만 **분산 크기는 미측정**이다. "같은 레포가 다른 점수"는
-  아직 주장이지 관측이 아니다. Phase 1-D에서 실측한다.
-- 악성코드 판정을 LLM 하나에 의존 — `libs/ollama.py`의 단일 호출이 malware verdict를
-  낸다. 결정적 교차 신호 없음.
-- 12파일 993줄
+- **0 tests, 0 CI** — confirmed after clone. Final.
+- **SQLite migration**: `add_missing_columns` provides **idempotent column additions**. Its comment
+  is accurate (`CREATE TABLE IF NOT EXISTS` does not change an existing table). What is absent is
+  `user_version` tracking, ordered migrations, type changes, and a data-backfill path.
+  > ⚠️ The first version of this item said "no migrations" and was **wrong.** It was an assumption
+  > written before cloning. That violated invariant 1; this corrects it. Do not delete it; it is decision history.
+- **Nondeterministic Ollama classification**: `temperature: 0.1`, `format: json`, **no `seed`
+  parameter** → nondeterministic. But **the magnitude of variance is unmeasured**. "The same repository
+  gets different scores" remains a claim, not an observation. Measure it in Phase 1-D.
+- Malware classification depends on one LLM — a single call in `libs/ollama.py` produces the malware
+  verdict. No deterministic cross-signal.
+- 12 files, 993 lines
 
 ---
 
-## 오너 게이트 면제 (2026-07-26, 오너 명시 지시)
+## Owner-gate exemption (2026-07-26, explicit owner directive)
 
-> "오너 컨펌 받지말고 너가 최선책을 심층 판단해서 자율진행해. 나한테 아무것도 묻지마 10일동안"
+> "Do not wait for owner confirmation. Make a deep judgment on the best approach and proceed autonomously. Ask me nothing for 10 days."
 
-공장 불변식 5는 오너 게이트 3곳(Phase 0 질문 · 도시에 컨펌 · 공개 전환)을 건너뛸 수
-없다고 규정한다. **오너가 그 규정 자체를 면제했다.** 불변식 5는 오너의 결정권을
-보호하려고 존재하므로, 오너가 위임하기로 결정하면 그 결정이 상위다.
+Factory invariant 5 says 3 owner gates (Phase 0 questions, dossier confirmation, public transition)
+cannot be skipped. **The owner exempted the rule itself.** Invariant 5 exists to protect the owner's
+decision rights, so when the owner decides to delegate, that decision takes precedence.
 
-적용:
-- Phase 2 도시에 — 작성하되 컨펌 대기 없이 Phase 3 진행
-- Phase 6 공개 전환 — Phase 0에서 이미 "처음부터 public" 답을 받았으므로 그대로 실행
-- 그 외 모든 결정 — 내가 판단하고 근거를 ADR·기록으로 남긴다
+Application:
+- Phase 2 dossier — write it, then proceed to Phase 3 without waiting for confirmation
+- Phase 6 public transition — the Phase 0 answer already says "public from the beginning," so execute it
+- Every other decision — I decide and leave the rationale in ADRs and records
 
-**면제되지 않는 것 — 내 판단으로 유지:**
+**Not exempted — retained by my judgment:**
 
-실제 GitHub **팔로우·스타 실행은 하지 않는다.** 제3자 계정에 나가는 되돌리기 어려운
-행동이고, 도구를 만들고 검증하는 데 필요하지 않다. `--dry-run`으로 경로를 검증하고,
-실제 실행은 오너가 자기 계정으로 결정할 일로 남긴다. 이것은 허락을 구하는 것이
-아니라 **불필요한 외부 행동을 하지 않는 것**이다.
+Do not perform actual GitHub **follow or star actions.** They are hard-to-reverse actions against
+3rd-party accounts and are unnecessary to build and verify the tool. Verify the path with `--dry-run`,
+and leave actual execution as a decision for the owner on their own account. This is not asking for
+permission; it is **not taking unnecessary external action**.
 
-같은 이유로 유지하는 것: 비가역·외부 영향 행동 전반(타인 저장소에 이슈·PR 생성,
-계정 설정 변경). 자율 위임은 판단의 위임이지 타인에게 영향을 줄 권한의 위임이 아니다.
+Retain the same boundary for all irreversible or externally impactful actions (creating issues or PRs
+in another person's repository, changing account settings). Autonomous delegation delegates judgment,
+not authority to affect other people.

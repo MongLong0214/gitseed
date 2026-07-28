@@ -1,0 +1,1791 @@
+{
+  "accessible": [
+    {
+      "category": "coding-agents",
+      "created_at": "2025-04-19T20:55:59Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "hesreallyhim/awesome-claude-code",
+      "stars": 51026
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-02T16:09:26Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "git-ai-project/git-ai",
+      "stars": 2364
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-16T09:31:16Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "InternScience/InternAgent",
+      "stars": 1387
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-24T23:13:52Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "bartolli/codanna",
+      "stars": 711
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-13T14:47:06Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "jqueryscript/awesome-claude-code",
+      "stars": 478
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-04-06T20:28:55Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "R2E-Gym/R2E-Gym",
+      "stars": 310
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-11T19:30:13Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "eqtylab/cupcake",
+      "stars": 281
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-04-10T07:03:24Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "DeepSoftwareAnalytics/swe-factory",
+      "stars": 183
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-19T20:43:32Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "baz-scm/awesome-reviewers",
+      "stars": 139
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-23T15:24:51Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "danielmeppiel/awesome-ai-native",
+      "stars": 110
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-22T18:04:08Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "automagik-dev/forge",
+      "stars": 88
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-07T10:45:46Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "iBz-04/Devseeker",
+      "stars": 62
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-29T14:45:37Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "dinoanderson/qwen_cli_coder",
+      "stars": 60
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-25T23:57:45Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "The-Focus-AI/june-2025-coding-agent-report",
+      "stars": 40
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-10T06:29:46Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "linhaowei1/SLD",
+      "stars": 31
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-11T02:19:10Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "gauravreddy08/flow",
+      "stars": 24
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-03T20:44:00Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "TensorTemplar/slopometry",
+      "stars": 12
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-15T18:29:00Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "BjornMelin/codeforge",
+      "stars": 10
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-21T18:41:01Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "thevibeworks/deva",
+      "stars": 10
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-19T22:19:41Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "fdietze/alors",
+      "stars": 6
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-03-03T17:37:04Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "cipher982/longhouse",
+      "stars": 6
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-29T14:10:39Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "KacemMathlouthi/go-code",
+      "stars": 5
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-04-29T09:50:04Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "PV-Bhat/GemForge-MCP",
+      "stars": 4
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-22T14:25:15Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "jose-compu/cerebras-coding-agent",
+      "stars": 4
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-03-12T10:18:25Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "thirdgerb/openai-moss-agents",
+      "stars": 4
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-11T17:48:03Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "askbudi/TinyCodeAgent",
+      "stars": 3
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-07-16T01:40:01Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Azure/async-loom",
+      "stars": 3
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-03-08T13:44:26Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Beliavsky/Groq-Fortran-agent",
+      "stars": 3
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-02-15T14:04:38Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": false
+      },
+      "repo": "edwardgushchin/Electron2D",
+      "stars": 2
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-10T08:59:10Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "igtm/llm-coder",
+      "stars": 2
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-12T15:14:18Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "yuto-moriizumi/coding-agent",
+      "stars": 1
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-03-04T08:00:34Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "brendanm12345/Zero-Shot-Web-App-Generator",
+      "stars": 1
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-06-26T11:43:50Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "pranay5255/YudaiV3",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-02-26T05:49:39Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "arighosh05/coding-agent",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-03-05T06:27:58Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "kundansinghdev/Awesome-windsurf",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-26T16:03:21Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "robitec97/zug",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-31T17:25:44Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "NavishaShetty/BESS-Coding-Agent",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-04-06T17:40:57Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": false
+      },
+      "repo": "ayanmali/Themus",
+      "stars": 0
+    },
+    {
+      "category": "coding-agents",
+      "created_at": "2025-05-10T16:48:34Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "ndamulelonemakh/ndamus-prompts",
+      "stars": 0
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-28T11:42:16Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "sansan0/TrendRadar",
+      "stars": 60920
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-26T23:40:39Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "upstash/context7",
+      "stars": 59806
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-07-24T23:28:14Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "wshobson/agents",
+      "stars": 38271
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-21T17:48:36Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "microsoft/playwright-mcp",
+      "stars": 35524
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-04T16:42:04Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "github/github-mcp-server",
+      "stars": 31743
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-06-07T12:15:57Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "czlonkowski/n8n-mcp",
+      "stars": 22419
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-06-16T17:33:44Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "NirDiamant/agents-towards-production",
+      "stars": 21183
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-13T05:47:46Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "liyupi/ai-guide",
+      "stars": 17729
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-04T20:46:17Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "microsoft/mcp-for-beginners",
+      "stars": 16840
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-13T02:55:06Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "GLips/Figma-Context-MCP",
+      "stars": 15504
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-16T13:57:00Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Arindam200/awesome-ai-apps",
+      "stars": 13275
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-18T11:01:58Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "CoplayDev/unity-mcp",
+      "stars": 12867
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-06-06T02:12:47Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "zilliztech/claude-context",
+      "stars": 12203
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-08T11:15:43Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "tadata-org/fastapi_mcp",
+      "stars": 11958
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-25T22:23:41Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "mrexodia/ida-pro-mcp",
+      "stars": 10800
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-07-10T17:53:18Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "0x4m4/hexstrike-ai",
+      "stars": 10512
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-07-06T09:51:27Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "MemTensor/MemOS",
+      "stars": 10397
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-28T10:06:31Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": false
+      },
+      "repo": "mcp-use/mcp-use",
+      "stars": 10392
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-16T15:41:18Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "VoltAgent/voltagent",
+      "stars": 10185
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-21T00:39:00Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "awslabs/mcp",
+      "stars": 9505
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-05-05T17:16:26Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": false
+      },
+      "repo": "google/adk-go",
+      "stars": 8534
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-29T00:44:19Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "idosal/git-mcp",
+      "stars": 8289
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-03T00:38:51Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "yzfly/Awesome-MCP-ZH",
+      "stars": 7470
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-10T09:20:38Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "AgentDeskAI/browser-tools-mcp",
+      "stars": 7276
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-05T17:58:01Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "modelcontextprotocol/registry",
+      "stars": 7071
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-16T16:45:37Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "grab/cursor-talk-to-figma-mcp",
+      "stars": 6934
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-28T02:01:22Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "BrowserMCP/mcp",
+      "stars": 6886
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-05-14T19:59:51Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "strands-agents/harness-sdk",
+      "stars": 6703
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-05-13T02:27:53Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "CursorTouch/Windows-MCP",
+      "stars": 6510
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-11T14:46:55Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "rikkahub/rikkahub",
+      "stars": 6364
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-23T08:19:33Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Sylinko/Everywhere",
+      "stars": 6193
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-14T01:56:51Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "ThinkInAIXYZ/deepchat",
+      "stars": 6158
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-09T17:31:18Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "getsentry/XcodeBuildMCP",
+      "stars": 6151
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-29T12:49:33Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "lharries/whatsapp-mcp",
+      "stars": 5935
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-11T09:20:56Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "ashishps1/learn-ai-engineering",
+      "stars": 5868
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-28T10:44:33Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "ModelEngine-Group/nexent",
+      "stars": 5792
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-04-14T07:53:36Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Klavis-AI/klavis",
+      "stars": 5778
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-03-28T16:21:06Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "mobile-next/mobile-mcp",
+      "stars": 5661
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-02-19T13:17:50Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "21st-dev/magic-mcp",
+      "stars": 5525
+    },
+    {
+      "category": "mcp",
+      "created_at": "2025-05-15T19:17:39Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "lemonade-sdk/lemonade",
+      "stars": 5130
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-03-31T21:51:15Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "microsoft/foundry-local",
+      "stars": 2454
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-03T10:01:04Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "rafska/awesome-local-llm",
+      "stars": 2442
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-08T22:08:58Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "amicalhq/amical",
+      "stars": 1468
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-05T05:31:02Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "NativeMindBrowser/NativeMindExtension",
+      "stars": 1091
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-23T11:40:13Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "thushan/olla",
+      "stars": 265
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-03-16T07:21:24Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "masaic-ai-platform/AgC",
+      "stars": 112
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-13T19:06:35Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "jonigl/ollama-mcp-bridge",
+      "stars": 95
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-04T21:47:28Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "JaySpiffy/draft-to-take",
+      "stars": 72
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-08T19:52:54Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "tcsenpai/keyfleur",
+      "stars": 69
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-17T05:00:37Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "vibheksoni/VerbalCodeAi",
+      "stars": 60
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-19T15:16:10Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "libre-webui/libre-webui",
+      "stars": 57
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-19T08:54:03Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "hddevteam/smart-form-filler",
+      "stars": 43
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-06T16:32:58Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "Talnz007/VulkanIlm",
+      "stars": 42
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-03-27T04:09:00Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Onion99/KMP-MineGPT",
+      "stars": 39
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-03-22T19:21:09Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "langswap-app/langswap",
+      "stars": 35
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-18T05:40:24Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "tsotchke/gpt2-basic",
+      "stars": 33
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-21T20:58:17Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "m15-ai/Faster-Local-Voice-AI",
+      "stars": 31
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-06T04:32:32Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "m15-ai/TrooperAI",
+      "stars": 28
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-02-05T11:47:45Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "spideydotjs/ollama-android",
+      "stars": 27
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-04-13T12:05:42Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": false,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "dwain-barnes/dria-livekit-agent-deep-research",
+      "stars": 25
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-03-12T17:45:03Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "mozilla-ai/speech-to-text",
+      "stars": 24
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-02-26T15:31:50Z",
+      "features": {
+        "commit_cadence_30d": true,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "code-forge-temple/scribe-pal",
+      "stars": 22
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-04-01T10:15:51Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "tcsenpai/shellquest",
+      "stars": 21
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-20T20:14:30Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "microsoft/WindowsML",
+      "stars": 20
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-07T09:56:08Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "tcsenpai/mcpbook",
+      "stars": 19
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-05T01:40:49Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "zats/local-llm",
+      "stars": 16
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-12T12:57:49Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": false,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "automataIA/wasm-knowledge-chatbot-rs",
+      "stars": 15
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-26T10:23:11Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "noorjotk/local-rag-engine",
+      "stars": 15
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-22T13:55:52Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "Vitgracer/Offline-Voice-LLM-Assistant",
+      "stars": 12
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-08T00:13:40Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "domia-ai/domia-core",
+      "stars": 10
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-13T09:31:44Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "ugo-emekauwa/private-ai-setup-dream-guide",
+      "stars": 8
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-02-01T18:30:49Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "alexykn/TorchTS",
+      "stars": 7
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-07-21T06:34:29Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "abendrothj/pig",
+      "stars": 7
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-02-20T19:57:41Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "hengkysteen/ollamb",
+      "stars": 6
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-04-21T12:04:06Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": false,
+        "readme_bytes": true
+      },
+      "repo": "NicuTheodorAlexandru/NFAI",
+      "stars": 6
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-29T14:46:56Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "ukkit/chat-o-llama",
+      "stars": 6
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-29T16:42:19Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "officiallyutso/chronicle",
+      "stars": 5
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-06-21T01:02:02Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": false,
+        "has_ci": false,
+        "has_license": true,
+        "has_tests": false,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "crazystuffxyz/Crazy-Deep-Research-GPT",
+      "stars": 5
+    },
+    {
+      "category": "local-ai",
+      "created_at": "2025-05-27T04:49:05Z",
+      "features": {
+        "commit_cadence_30d": false,
+        "contributor_count": true,
+        "has_ci": true,
+        "has_license": true,
+        "has_tests": true,
+        "manifest_present": true,
+        "readme_bytes": true
+      },
+      "repo": "Shun0212/OwlSpotLight",
+      "stars": 5
+    }
+  ],
+  "collection_complete": false,
+  "github_token_present": false,
+  "inaccessible": [],
+  "incomplete_reasons": [
+    "GITHUB_TOKEN absent; unauthenticated collection cannot establish a complete sample"
+  ],
+  "selected_count": 120,
+  "unscoreable": [
+    {
+      "reason": "no commit at three-month cutoff",
+      "repo": "alexei-led/cc-thingz"
+    },
+    {
+      "reason": "no commit at three-month cutoff",
+      "repo": "jan3dev/a1echos"
+    }
+  ]
+}

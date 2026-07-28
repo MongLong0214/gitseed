@@ -8,6 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  commitlore:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Validate CommitLore records added by this pull request
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/commitlore"
+          git clone https://github.com/MongLong0214/commitlore.git "$tool_dir"
+          git -C "$tool_dir" checkout --detach 69ba58e1b8dc1f8f849e24e305cab2a004934e03
+          node "$tool_dir/dist/commitlore.mjs" validate --range \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
   test:
     runs-on: ubuntu-latest
     strategy:

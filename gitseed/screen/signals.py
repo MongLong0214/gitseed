@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Final, Sequence
 
+from ..evidence import ClaimBasis
+
 HIGH: Final = "high"
 LOW: Final = "low"
 
@@ -33,8 +35,10 @@ class Signal:
     path: str
     line: int
     excerpt: str
+    basis: ClaimBasis = ClaimBasis.DETERMINISTIC
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "basis", ClaimBasis(self.basis))
         if not self.path:
             raise ValueError("Signal.path is required — a signal must cite a file")
         if self.line < 1:

@@ -91,6 +91,16 @@ class TestForbiddenVersusExhausted:
     def test_429_is_always_a_rate_limit(self) -> None:
         assert classify(429, {}) == "rate-limited"
 
+    def test_403_forbidden_is_never_classified_the_same_as_404_not_found(self) -> None:
+        """Issue #6: GitHub hides a repository we cannot see behind a 404, and
+        only ever answers 403 for one we can see but lack permission on -- the
+        two are never the same status, so `classify` must never collapse them
+        into the same outcome regardless of the headers attached."""
+        budget_left = {"X-RateLimit-Remaining": "4900"}
+        assert classify(403, budget_left) == "forbidden"
+        assert classify(404, budget_left) != "forbidden"
+        assert classify(404, budget_left) != classify(403, budget_left)
+
 
 class TestTruncationIsReported:
     def test_a_rate_limit_marks_the_result_incomplete(self) -> None:
@@ -119,6 +129,35 @@ class TestTruncationIsReported:
         result = collect("q", transport=FakeTransport([(500, {}, b"")]))
         assert not result.complete
         assert "500" in (result.stopped_because or "")
+
+    def test_a_live_captured_forbidden_response_is_a_permissions_problem_not_a_wait(self) -> None:
+        """Issue #6 -- real evidence, not reconstructed.
+
+        Captured 2026-07-28 through gitseed's own `UrllibTransport`, live against
+        GET repos/torvalds/linux/collaborators with a valid token scoped for
+        something else: HTTP 403, budget in the thousands remaining, no
+        Retry-After header, body `{"message": "Must have push access to view
+        repository collaborators.", ..., "status": "403"}`. The header values
+        below are that response's real X-RateLimit-* trio; only the token itself
+        (never present in a response) is withheld.
+        """
+        real_forbidden_headers = {
+            "X-RateLimit-Limit": "5000",
+            "X-RateLimit-Remaining": "4900",
+            "X-RateLimit-Reset": "1785199522",
+        }
+        real_forbidden_body = (
+            b'{"message": "Must have push access to view repository collaborators.", '
+            b'"documentation_url": "https://docs.github.com/rest/collaborators/collaborators'
+            b'#list-repository-collaborators", "status": "403"}'
+        )
+        transport = FakeTransport([(403, real_forbidden_headers, real_forbidden_body)])
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append)
+        assert not result.complete
+        assert "permissions" in (result.stopped_because or "")
+        assert slept == []  # a permissions error is never waited out, even with wait=True
+        assert len(transport.urls) == 1  # and never retried
 
 
 class TestWaiting:

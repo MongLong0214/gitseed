@@ -1,23 +1,39 @@
-# PRD F1 — 수집 (GitHub Search → 후보 큐)
+# PRD F1 — Collect (GitHub Search → candidate queue)
 
-## 목표
-GitHub Search로 후보 저장소를 가져와 로컬 DB에 넣는다. **레이트리밋에 걸려 조용히
-멈추지 않는다** — 씨앗의 실측 결함(처리 0건)이 여기서 반복되면 안 된다.
+## Goal
+Fetch candidate repositories through GitHub Search and put them in the local DB. **Do not stop
+silently on a rate limit** — the seed's measured defect (0 processed) must not recur here.
 
-## 비목표
-- 저장소 clone (F2 소관)
-- 채점 (F3 소관)
+## Non-goals
+- Repository clone (owned by F2)
+- Grading (owned by F3)
 
-## 요구사항
-1. GitHub Search API 질의. 언어·최소 스타·갱신 시각 필터
-2. **레이트리밋 처리**: `X-RateLimit-Remaining`/`Reset` 헤더를 읽고, 소진 시 대기하거나
-   명시적으로 중단 보고. 403/429를 재시도와 구분한다
-3. 중복 삽입 금지 (`repo` 기본키)
-4. 부분 실패 시 이미 넣은 것은 유지하고 어디까지 갔는지 보고
+## Requirements
+1. Query the GitHub Search API. Filter by language, minimum stars, and update time
+2. **Rate-limit handling**: read `X-RateLimit-Remaining`/`Reset` headers; when exhausted, wait or
+   explicitly report termination. Distinguish 403/429 from retryable responses
+3. No duplicate insertion (`repo` primary key)
+4. On partial failure, preserve already-inserted rows and report progress
 
-## AC (기계 판정)
-- [ ] `X-RateLimit-Remaining: 0` 응답을 주면 대기하거나 `RateLimitExhausted`로 종료.
-      **조용히 0건 반환 금지** — 이걸 검증하는 테스트가 있다
-- [ ] 429/403(rate) 과 403(권한 없음)을 다르게 처리하는 테스트
-- [ ] 같은 질의 2회 실행 시 DB 행 수가 늘지 않는다
-- [ ] 네트워크 예외 발생 시 이미 커밋된 행이 롤백되지 않는다
+## AC (mechanical decision)
+- [ ] Given a response with `X-RateLimit-Remaining: 0`, wait or exit with `RateLimitExhausted`.
+      **Do not silently return 0 results** — a test verifies this
+- [ ] Test that 429/403 (rate) and 403 (forbidden) are handled differently
+- [ ] Running the same query 2 times does not increase the DB row count
+- [ ] A network exception does not roll back already-committed rows
+
+## Record status (2026-07-28)
+
+**Persistence: satisfied, by a different design than described above.** F8 (`gitseed/storage.py`,
+`gitseed/storage_schema.py`) landed a versioned SQLite `run_artifacts` table that stores whole,
+immutable `RunArtifact` records with insert-only correction lineage (`corrects_run_id`) — not the
+per-candidate row store with a `repo` primary key this PRD's requirement 3 and AC describe. The
+requirement this PRD names is met; the shape it predicted is not what shipped. Recorded here so
+this reads as closed rather than outstanding.
+
+**`RateLimitExhausted`: ruled out, not implemented.** `CollectResult.complete` and
+`CollectResult.stopped_because` already carry a collection's incompleteness explicitly, and the
+run artifact records which port failed and why. A dedicated exception type would be a second way
+to say what the result type already says — two descriptions of the same fact drift apart the
+first time one of them is updated and the other is not. See commit trailers for the formal
+`Ruled-out:` record.
