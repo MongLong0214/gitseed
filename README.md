@@ -47,10 +47,12 @@ For live grading, use `--grade-timeout` (in seconds, default 120) to control how
 python3 -m gitseed radar --query "small tools" --artifact run.json
 python3 -m gitseed explain owner/repo --artifact run.json
 python3 -m gitseed export run.json > exported-run.json
-python3 -m gitseed radar --replay run.json
+python3 -m gitseed render run.json
+python3 -m gitseed replay run.json
+python3 -m gitseed re-evaluate run.json
 ```
 
-`explain` shows feature contributions, the weight-set version, and unavailable inputs. `export` writes the canonical versioned artifact, so a consumer can round-trip it with the same schema. A replayed artifact is labelled as its source in CLI status output.
+`render` shows the stored output unchanged. `replay` re-runs the recorded inputs only when its pipeline, screening, source-selection, and category-pack versions match this release. `re-evaluate` runs stored `full-source` artifacts under the current engine. Artifacts default to `digest` source storage; choose `--source-mode full-source` only when re-evaluation is required. Engine versions are hand-maintained semantic identifiers, bumped when that engine's observable output changes.
 
 Exit codes: `0` complete; `1` invalid invocation or operational failure; `2` incomplete run.
 

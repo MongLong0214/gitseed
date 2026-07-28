@@ -159,7 +159,7 @@ def test_radar_defaults_to_dry_run_before_any_approval_path() -> None:
     assert args.dry_run is True
 
 
-def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) -> None:
+def test_recorded_run_renders_offline_with_identical_output(tmp_path, capsys) -> None:
     # Given: a fixture-backed run records one canonical artifact.
     artifact = tmp_path / "run.json"
     live_code = main(
@@ -175,18 +175,18 @@ def test_recorded_run_replays_offline_with_identical_output(tmp_path, capsys) ->
     )
     live = capsys.readouterr()
 
-    # When: the CLI replays only that artifact.
-    replay_code = main(["replay", str(artifact)])
-    replayed = capsys.readouterr()
+    # When: the CLI renders only that artifact.
+    render_code = main(["render", str(artifact)])
+    rendered = capsys.readouterr()
 
-    # Then: replay performs no live I/O and renders the same result.
-    assert live_code == replay_code == 0
-    assert replayed.out == live.out
+    # Then: rendering performs no live I/O and returns the same result.
+    assert live_code == render_code == 0
+    assert rendered.out == live.out
     assert live.err == ""
-    assert replayed.err == "source: replayed artifact\n"
+    assert rendered.err == "source: render artifact\n"
 
 
-def test_radar_replay_cannot_reach_approval_without_disabling_dry_run(tmp_path, monkeypatch, capsys) -> None:
+def test_radar_render_cannot_reach_approval_without_disabling_dry_run(tmp_path, monkeypatch, capsys) -> None:
     # Given: a canonical artifact and an approval path that must stay untouched.
     artifact = tmp_path / "run.json"
     assert main(["radar", "--query", "example", "--fixtures", str(FIXTURES), "--artifact", str(artifact)]) == 0
@@ -194,12 +194,12 @@ def test_radar_replay_cannot_reach_approval_without_disabling_dry_run(tmp_path, 
 
     # When: radar runs normally and then renders the recorded queue.
     radar_code = main(["radar", "--query", "example", "--fixtures", str(FIXTURES)])
-    exit_code = main(["radar", "--replay", str(artifact)])
+    exit_code = main(["radar", "--render", str(artifact)])
 
-    # Then: it remains a read-only replay and says so.
+    # Then: it remains a read-only render and says so.
     captured = capsys.readouterr()
     assert radar_code == exit_code == 0
-    assert "source: replayed artifact" in captured.err
+    assert "source: rendered artifact" in captured.err
 
 
 def test_every_command_help_documents_the_exit_code_convention() -> None:
@@ -207,7 +207,7 @@ def test_every_command_help_documents_the_exit_code_convention() -> None:
     parser = cli._parser()
 
     # When/Then: help gives one shared meaning to its process status.
-    for command in ("radar", "run", "replay", "explain", "export"):
+    for command in ("radar", "run", "render", "replay", "re-evaluate", "explain", "export"):
         help_text = parser._subparsers._group_actions[0].choices[command].format_help()
         assert " ".join(cli.EXIT_CODES.split()) in " ".join(help_text.split())
 

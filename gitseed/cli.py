@@ -17,7 +17,7 @@ from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
-from .application import execute, replay
+from .application import execute, re_evaluate, render, replay
 from .artifact import RunArtifact
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
@@ -440,7 +440,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("radar", aliases=["run"], description=SCORE_LIMIT, epilog=EXIT_CODES)
     command.add_argument("--query", help="GitHub repository search query")
-    command.add_argument("--replay", type=Path, help="render a recorded artifact without live I/O")
+    command.add_argument("--render", type=Path, help="render recorded output without re-evaluating it")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
     command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
     # A default write turns an accidental invocation into an external side effect.
@@ -450,9 +450,21 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
     command.add_argument("--artifact", type=Path, help="write a replayable record of this run")
-    replay_command = commands.add_parser("replay", description="Compatibility alias for radar --replay.", epilog=EXIT_CODES)
+    command.add_argument(
+        "--source-mode",
+        choices=("metadata-only", "digest", "full-source"),
+        default="digest",
+        help="artifact source retention mode; digest is the safe default",
+    )
+    render_command = commands.add_parser("render", description="Render stored output unchanged.", epilog=EXIT_CODES)
+    render_command.add_argument("artifact", type=Path)
+    render_command.add_argument("--json", action="store_true")
+    replay_command = commands.add_parser("replay", description="Re-run under the recorded engine version.", epilog=EXIT_CODES)
     replay_command.add_argument("artifact", type=Path)
     replay_command.add_argument("--json", action="store_true")
+    reevaluate_command = commands.add_parser("re-evaluate", description="Re-run stored full source under the current engine.", epilog=EXIT_CODES)
+    reevaluate_command.add_argument("artifact", type=Path)
+    reevaluate_command.add_argument("--json", action="store_true")
     explain_command = commands.add_parser("explain", description=SCORE_LIMIT, epilog=EXIT_CODES)
     explain_command.add_argument("repo")
     explain_command.add_argument("--artifact", type=Path, required=True)
@@ -527,8 +539,8 @@ def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
     out.write(_table_rows(records) + "\n")
 
 
-def _replay(path: Path) -> RunArtifact:
-    return replay(path.read_bytes())
+def _render(path: Path) -> RunArtifact:
+    return render(path.read_bytes())
 
 
 def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> int:
@@ -626,17 +638,22 @@ def main(
         return 1 if error.code else 0
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
-    if args.command == "replay":
+    if args.command in ("render", "replay", "re-evaluate"):
         try:
-            artifact = _replay(args.artifact)
+            action = {
+                "render": render,
+                "replay": replay,
+                "re-evaluate": re_evaluate,
+            }[args.command]
+            artifact = action(args.artifact.read_bytes())
         except (OSError, ValueError) as error:
-            err.write(f"replay failed: {error}\n")
+            err.write(f"{args.command} failed: {error}\n")
             return 1
         _render_radar(artifact, args.json, out)
-        return _status(artifact, err, "replayed artifact")
+        return _status(artifact, err, f"{args.command} artifact")
     if args.command == "explain":
         try:
-            artifact = _replay(args.artifact)
+            artifact = _render(args.artifact)
         except (OSError, ValueError) as error:
             err.write(f"explain failed: {error}\n")
             return 1
@@ -646,7 +663,7 @@ def main(
         return _status(artifact, err, "replayed artifact")
     if args.command == "export":
         try:
-            artifact = _replay(args.artifact)
+            artifact = _render(args.artifact)
         except (OSError, ValueError) as error:
             err.write(f"export failed: {error}\n")
             return 1
@@ -654,19 +671,19 @@ def main(
         return _status(artifact, err, "replayed artifact")
     if args.command not in ("radar", "run"):
         return 1
-    if args.replay is not None:
+    if args.render is not None:
         if args.query is not None:
-            err.write("invalid invocation: --query cannot be used with --replay\n")
+            err.write("invalid invocation: --query cannot be used with --render\n")
             return 1
         try:
-            artifact = _replay(args.replay)
+            artifact = _render(args.render)
         except (OSError, ValueError) as error:
             err.write(f"radar failed: {error}\n")
             return 1
         _render_radar(artifact, args.json, out)
-        return _status(artifact, err, "replayed artifact")
+        return _status(artifact, err, "rendered artifact")
     if args.query is None:
-        err.write("invalid invocation: --query is required unless --replay is used\n")
+        err.write("invalid invocation: --query is required unless --render is used\n")
         return 1
     if args.limit < 1:
         err.write("invalid invocation: --limit must be positive\n")
@@ -704,6 +721,7 @@ def main(
                 active_grader,
                 SystemClock(),
             ),
+            source_mode=args.source_mode,
         )
         if args.artifact is not None:
             args.artifact.write_bytes(recorded.to_bytes())

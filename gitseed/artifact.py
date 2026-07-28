@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
+from hashlib import sha256
+from typing import Literal
 
 from .collect.search import Candidate, CollectResult
 from .evidence import ClaimBasis
@@ -14,8 +16,23 @@ from .ports import RepositoryMetadata, RunRequest
 from .scoring import Feature, Recommendation, Score, ScoreInputs
 from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
+from .screen.verdict import findings, unverified
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SourceMode = Literal["metadata-only", "digest", "full-source"]
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class EngineVersions:
+    """Semantic identifiers bumped when an engine's observable result changes."""
+
+    pipeline: str = "pipeline-v1"
+    screening: str = "screening-v1"
+    source_selection: str = "source-selection-v1"
+    category_packs: str = "category-packs-v1"
+
+
+ENGINE_VERSIONS = EngineVersions()
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -23,7 +40,17 @@ class ArtifactVersionError(ValueError):
     version: int | str | None
 
     def __str__(self) -> str:
-        return f"unsupported run artifact schema: {self.version!r}"
+        return f"artifact schema version mismatch: recorded {self.version!r}, current {SCHEMA_VERSION}"
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class EngineVersionMismatch(ValueError):
+    engine: str
+    recorded: str
+    current: str
+
+    def __str__(self) -> str:
+        return f"{self.engine} version mismatch: recorded {self.recorded}, current {self.current}"
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -40,7 +67,7 @@ class PortFailure:
 class RepositoryTrace:
     candidate: Candidate
     metadata: RepositoryMetadata | None
-    files: FetchedFiles | None
+    files: ArtifactFiles | None
     grade: GradeResult | None
     failures: tuple[PortFailure, ...] = ()
 
@@ -56,19 +83,163 @@ class ScoredCandidate:
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactCollection:
+    candidates: tuple[Candidate, ...]
+    complete: bool
+    stopped_because: str | None
+    pages_fetched: int
+
+    @classmethod
+    def from_collected(cls, collected: CollectResult) -> ArtifactCollection:
+        return cls(tuple(collected.candidates), collected.complete, collected.stopped_because, collected.pages_fetched)
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactReviewed:
+    candidate: Candidate
+    signals: tuple[Signal, ...]
+    severity: str
+    grade: GradeResult | None
+    withheld: str | None
+    skipped_files: tuple[str, ...]
+    screening_basis: ClaimBasis
+    screened_files: tuple[str, ...]
+    coverage: SourceCoverage | None
+
+    @classmethod
+    def from_reviewed(cls, reviewed: Reviewed) -> ArtifactReviewed:
+        return cls(
+            reviewed.candidate,
+            tuple(reviewed.signals),
+            reviewed.severity,
+            reviewed.grade,
+            reviewed.withheld,
+            reviewed.skipped_files,
+            reviewed.screening_basis,
+            reviewed.screened_files,
+            reviewed.coverage,
+        )
+
+    @property
+    def findings(self) -> tuple[Signal, ...]:
+        return findings(self.signals)
+
+    @property
+    def unverified(self) -> tuple[Signal, ...]:
+        return unverified(self.signals)
+
+    @property
+    def score(self) -> int | None:
+        return None if self.grade is None else self.grade.idea + self.grade.skill
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactPipelineResult:
+    reviewed: tuple[ArtifactReviewed, ...]
+    complete: bool
+    incomplete_because: tuple[str, ...]
+    rate_limited: bool
+    grading_basis: ClaimBasis
+
+    @classmethod
+    def from_result(cls, result: PipelineResult) -> ArtifactPipelineResult:
+        return cls(
+            tuple(ArtifactReviewed.from_reviewed(reviewed) for reviewed in result.reviewed),
+            result.complete,
+            tuple(result.incomplete_because),
+            result.rate_limited,
+            result.grading_basis,
+        )
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactSmokeResult:
+    passed: bool
+    model: str
+    failures: tuple[str, ...]
+
+    @classmethod
+    def from_smoke(cls, smoke: SmokeResult) -> ArtifactSmokeResult:
+        return cls(smoke.passed, smoke.model, tuple(smoke.failures))
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactSourceFile:
+    path: str
+    sha256: str | None
+    size: int
+    excerpts: tuple[str, ...] = ()
+    content: str | None = None
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
+class ArtifactFiles:
+    mode: SourceMode
+    files: tuple[ArtifactSourceFile, ...]
+    skipped: tuple[str, ...] = ()
+    complete: bool = True
+    incomplete_because: str | None = None
+    rate_limited: bool = False
+    coverage: SourceCoverage | None = None
+
+    @classmethod
+    def from_fetched(
+        cls,
+        fetched: FetchedFiles,
+        mode: SourceMode,
+        signals: tuple[Signal, ...],
+    ) -> ArtifactFiles:
+        excerpts = _signal_excerpts(fetched.files, signals) if mode == "digest" else {}
+        return cls(
+            mode,
+            tuple(
+                ArtifactSourceFile(
+                    path,
+                    None if mode == "metadata-only" else sha256(text.encode()).hexdigest(),
+                    len(text.encode()),
+                    excerpts.get(path, ()),
+                    text if mode == "full-source" else None,
+                )
+                for path, text in fetched.files
+            ),
+            fetched.skipped,
+            fetched.complete,
+            fetched.incomplete_because,
+            fetched.rate_limited,
+            fetched.coverage,
+        )
+
+    def to_fetched(self) -> FetchedFiles:
+        if self.mode != "full-source":
+            raise ValueError(f"cannot re-evaluate a {self.mode} artifact; record with --source-mode full-source")
+        return FetchedFiles(
+            tuple((file.path, file.content or "") for file in self.files),
+            self.skipped,
+            self.complete,
+            self.incomplete_because,
+            self.rate_limited,
+            self.coverage,
+        )
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
 class RunArtifact:
     request: RunRequest
     started_at: datetime | None
-    collection: CollectResult
+    collection: ArtifactCollection
     repositories: tuple[RepositoryTrace, ...]
-    result: PipelineResult
+    result: ArtifactPipelineResult
     scores: tuple[ScoredCandidate, ...]
-    model_smoke: SmokeResult
+    model_smoke: ArtifactSmokeResult
+    engines: EngineVersions = ENGINE_VERSIONS
+    source_mode: SourceMode = "digest"
     failures: tuple[PortFailure, ...] = ()
 
     def to_bytes(self) -> bytes:
         payload = {
             "schema": SCHEMA_VERSION,
+            "engines": asdict(self.engines),
+            "source_mode": self.source_mode,
             "input": asdict(self.request),
             "ports": {
                 "started_at": None if self.started_at is None else self.started_at.isoformat(),
@@ -105,6 +276,8 @@ class RunArtifact:
             result=_result_from_dict(output["result"]),
             scores=tuple(_scored_from_dict(scored) for scored in output["scores"]),
             model_smoke=_smoke_from_dict(ports["model_smoke"]),
+            engines=EngineVersions(**payload["engines"]),
+            source_mode=payload["source_mode"],
             failures=tuple(PortFailure(**failure) for failure in ports["failures"]),
         )
 
@@ -119,9 +292,9 @@ def _candidate_from_dict(payload: dict[str, str | int]) -> Candidate:
     )
 
 
-def _collection_from_dict(payload: dict) -> CollectResult:
-    return CollectResult(
-        candidates=[_candidate_from_dict(candidate) for candidate in payload["candidates"]],
+def _collection_from_dict(payload: dict) -> ArtifactCollection:
+    return ArtifactCollection(
+        candidates=tuple(_candidate_from_dict(candidate) for candidate in payload["candidates"]),
         complete=bool(payload["complete"]),
         stopped_because=payload["stopped_because"],
         pages_fetched=int(payload["pages_fetched"]),
@@ -137,11 +310,12 @@ def _metadata_from_dict(payload: dict | None) -> RepositoryMetadata | None:
     )
 
 
-def _files_from_dict(payload: dict | None) -> FetchedFiles | None:
+def _files_from_dict(payload: dict | None) -> ArtifactFiles | None:
     if payload is None:
         return None
-    return FetchedFiles(
-        tuple((path, text) for path, text in payload["files"]),
+    return ArtifactFiles(
+        payload["mode"],
+        tuple(ArtifactSourceFile(**file) for file in payload["files"]),
         tuple(payload["skipped"]),
         bool(payload["complete"]),
         payload["incomplete_because"],
@@ -169,8 +343,8 @@ def _grade_from_dict(payload: dict | None) -> GradeResult | None:
     return None if payload is None else GradeResult(**payload)
 
 
-def _smoke_from_dict(payload: dict) -> SmokeResult:
-    return SmokeResult(bool(payload["passed"]), str(payload["model"]), list(payload["failures"]))
+def _smoke_from_dict(payload: dict) -> ArtifactSmokeResult:
+    return ArtifactSmokeResult(bool(payload["passed"]), str(payload["model"]), tuple(payload["failures"]))
 
 
 def _trace_to_dict(trace: RepositoryTrace):
@@ -193,13 +367,13 @@ def _trace_from_dict(payload: dict) -> RepositoryTrace:
     )
 
 
-def _result_from_dict(payload: dict) -> PipelineResult:
+def _result_from_dict(payload: dict) -> ArtifactPipelineResult:
     reviewed = []
     for entry in payload["reviewed"]:
         reviewed.append(
-            Reviewed(
+            ArtifactReviewed(
                 candidate=_candidate_from_dict(entry["candidate"]),
-                signals=[Signal(**signal) for signal in entry["signals"]],
+                signals=tuple(Signal(**signal) for signal in entry["signals"]),
                 severity=entry["severity"],
                 grade=_grade_from_dict(entry["grade"]),
                 withheld=entry["withheld"],
@@ -209,13 +383,26 @@ def _result_from_dict(payload: dict) -> PipelineResult:
                 coverage=_coverage_from_dict(entry.get("coverage")),
             )
         )
-    return PipelineResult(
-        reviewed=reviewed,
+    return ArtifactPipelineResult(
+        reviewed=tuple(reviewed),
         complete=bool(payload["complete"]),
-        incomplete_because=list(payload["incomplete_because"]),
+        incomplete_because=tuple(payload["incomplete_because"]),
         rate_limited=bool(payload["rate_limited"]),
         grading_basis=ClaimBasis(payload["grading_basis"]),
     )
+
+
+def _signal_excerpts(
+    files: tuple[tuple[str, str], ...],
+    signals: tuple[Signal, ...],
+) -> dict[str, tuple[str, ...]]:
+    by_path: dict[str, list[str]] = {}
+    for path, text in files:
+        lines = text.splitlines()
+        for signal in signals:
+            if signal.path == path and signal.line <= len(lines):
+                by_path.setdefault(path, []).append(lines[signal.line - 1][:240])
+    return {path: tuple(excerpts) for path, excerpts in by_path.items()}
 
 
 def _scored_to_dict(scored: ScoredCandidate):
