@@ -14,8 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from gitseed.screen.coverage import SourceCoverage
 from gitseed.screen.signals import HIGH, LOW, Signal, scan_files, scan_text
-from gitseed.screen.verdict import NONE, severity_of
+from gitseed.screen.verdict import NONE, NONE_FOUND_IN_SCANNED_FILES, risk_of, severity_of
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CLEAN = sorted((FIXTURES / "clean").iterdir())
@@ -144,3 +145,26 @@ class TestVerdict:
         signals = [Signal("network", LOW, "a.py", i, "1.2.3.4") for i in range(1, 6)]
         signals.append(Signal("install-script", HIGH, "b.sh", 1, "curl x | sh"))
         assert severity_of(signals) == HIGH
+
+
+class TestRiskOf:
+    """GS-P0-008: `severity_of` refined by what coverage says was scanned."""
+
+    def test_without_coverage_behaves_exactly_like_severity_of(self) -> None:
+        assert risk_of([], None) == NONE
+        assert risk_of([Signal("network", LOW, "a.py", 1, "1.2.3.4")], None) == LOW
+
+    def test_a_scan_complete_for_policy_that_found_nothing_stays_a_bare_none(self) -> None:
+        coverage = SourceCoverage(discovered_files=3, eligible_files=3, scanned_files=3)
+        assert risk_of([], coverage) == NONE
+
+    def test_a_count_capped_scan_that_found_nothing_is_not_a_bare_none(self) -> None:
+        """The exact 200-eligible/20-scanned shape GS-P0-008 names."""
+        coverage = SourceCoverage(discovered_files=200, eligible_files=200, scanned_files=20)
+        assert risk_of([], coverage) == NONE_FOUND_IN_SCANNED_FILES
+
+    def test_a_real_finding_is_unaffected_by_incomplete_coverage(self) -> None:
+        """A signal that was seen does not become less true because other files were not."""
+        coverage = SourceCoverage(discovered_files=200, eligible_files=200, scanned_files=20)
+        signals = [Signal("install-script", HIGH, "a.sh", 1, "curl x | sh")]
+        assert risk_of(signals, coverage) == HIGH

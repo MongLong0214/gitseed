@@ -6,6 +6,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import traceback
 from dataclasses import replace
@@ -26,6 +27,7 @@ from .review.actions import GitHubWriter, perform
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions
 from .review.trailers import render_block
+from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import ScoreInputs, WEIGHTS
 
 
@@ -51,6 +53,33 @@ SOURCE_EXTENSIONS: Final = frozenset(
         ".swift", ".ts", ".tsx", ".vue", ".zsh",
     }
 )
+# Manifests, lockfiles, and CI definitions: selected by exact filename
+# regardless of extension, because the extension allow-list above has no
+# `.json`/`.yaml`/`.lock`/extensionless entry and never will -- broadening it
+# would let arbitrary data files ride along with source, not just the handful
+# of build-time inputs a supply-chain attack actually targets. See
+# `_is_priority_path` for why these are also exempt from the file-count cap.
+PRIORITY_FILENAMES: Final = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "Cargo.toml",
+        "Cargo.lock",
+        "go.mod",
+        "go.sum",
+        "Dockerfile",
+        "Makefile",
+    }
+)
+# One level deep under .github/workflows/, matching the issue's own
+# `.github/workflows/*.yml`/`*.yaml` glob.
+_WORKFLOW_PATH: Final = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 
 
 class FetchFiles(Protocol):
@@ -175,6 +204,18 @@ class FixtureGrader:
         return "base64.b64decode" in digest
 
 
+def _is_priority_path(path: str) -> bool:
+    """A manifest, lockfile, or workflow file -- fetched regardless of extension.
+
+    These are exactly the files a supply-chain attack targets: install hooks,
+    pinned dependencies, CI trigger conditions. `SOURCE_EXTENSIONS` alone
+    cannot select them (GS-P0-001), and even once it can, they must not be
+    the files an attacker crowds out by padding earlier tree entries
+    (GS-P0-008) -- see the priority-first selection in `fetch_files` below.
+    """
+    return Path(path).name in PRIORITY_FILENAMES or bool(_WORKFLOW_PATH.match(path))
+
+
 class GitHubClient:
     """Read repository text and execute reviewed GitHub account actions."""
 
@@ -187,43 +228,83 @@ class GitHubClient:
         if error := _github_response_error(status, headers):
             raise error
         tree = json.loads(body).get("tree", [])
-        selected: list[tuple[str, str]] = []
-        skipped: list[str] = []
-        total_bytes = 0
+
+        discovered = 0
+        eligible = 0
+        priority_candidates: list[tuple[str, str, int]] = []
+        regular_candidates: list[tuple[str, str, int]] = []
+        skipped_policy: list[SkippedFile] = []
+
         # An allow-list fails closed for new binary formats; a deny-list would repeat
         # the injection-scanner mistake where the next unknown format slips through.
         for entry in tree:
             if entry.get("type") != "blob":
                 continue
+            discovered += 1
             path = str(entry["path"])
             size = int(entry.get("size", 0))
-            if path.endswith((".min.js", ".min.css")) or Path(path).suffix.lower() not in SOURCE_EXTENSIONS:
-                skipped.append(f"{path}: extension is not gradeable")
-            elif size > SOURCE_FILE_BYTE_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_FILE_BYTE_CAP}-byte cap")
-            elif len(selected) == SOURCE_FILE_COUNT_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_FILE_COUNT_CAP}-file count cap")
-            elif total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap")
-            else:
-                selected.append((path, str(entry["url"])))
-                total_bytes += size
+            url = str(entry["url"])
+            priority = _is_priority_path(path)
+            if not priority and (path.endswith((".min.js", ".min.css")) or Path(path).suffix.lower() not in SOURCE_EXTENSIONS):
+                skipped_policy.append(SkippedFile(path, "extension is not gradeable"))
+                continue
+            eligible += 1
+            if size > SOURCE_FILE_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_FILE_BYTE_CAP}-byte cap"))
+                continue
+            (priority_candidates if priority else regular_candidates).append((path, url, size))
+
+        selected: list[tuple[str, str]] = []
+        total_bytes = 0
+        # Priority manifests/lockfiles/workflows are selected before the
+        # count budget is applied at all, not merely early within it -- an
+        # attacker who pads the first SOURCE_FILE_COUNT_CAP tree entries with
+        # clean files cannot push a manifest out of the scan by position,
+        # only by exceeding the byte budget every selected file still shares.
+        for path, url, size in priority_candidates:
+            if total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap"))
+                continue
+            selected.append((path, url))
+            total_bytes += size
+
+        regular_selected = 0
+        for path, url, size in regular_candidates:
+            if regular_selected == SOURCE_FILE_COUNT_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_FILE_COUNT_CAP}-file count cap"))
+                continue
+            if total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap"))
+                continue
+            selected.append((path, url))
+            total_bytes += size
+            regular_selected += 1
 
         files: list[tuple[str, str]] = []
+        skipped_error: list[SkippedFile] = []
         complete = True
         incomplete_because: str | None = None
         rate_limited = False
         for path, url in selected:
             blob_status, blob_headers, blob_body = self.transport.get(url)
             if error := _github_response_error(blob_status, blob_headers):
-                skipped.append(f"{path}: {error}")
+                skipped_error.append(SkippedFile(path, str(error)))
                 complete = False
                 incomplete_because = incomplete_because or error.run_reason
                 rate_limited = rate_limited or error.rate_limited
                 continue
             blob = json.loads(blob_body)
             files.append((path, base64.b64decode(blob["content"]).decode(errors="replace")))
-        return FetchedFiles(tuple(files), tuple(skipped), complete, incomplete_because, rate_limited)
+
+        coverage = SourceCoverage(
+            discovered_files=discovered,
+            eligible_files=eligible,
+            scanned_files=len(files),
+            skipped_policy=tuple(skipped_policy),
+            skipped_error=tuple(skipped_error),
+        )
+        skipped = tuple(f"{item.path}: {item.reason}" for item in (*skipped_policy, *skipped_error))
+        return FetchedFiles(tuple(files), skipped, complete, incomplete_because, rate_limited, coverage)
 
     def star(self, repo: str) -> None:
         self._write("PUT", f"https://api.github.com/user/starred/{quote(repo, safe='/')}")
@@ -458,9 +539,18 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     out.write(f"unavailable features: {unavailable or 'none'}\n")
     screened = ", ".join(reviewed.screened_files) or "0 files"
     out.write(f"security coverage: {reviewed.screening_basis.value} ({screened})\n")
-    coverage = artifact.result.grading_basis.value
-    suffix = " (deterministic-only)" if coverage == "absent" else ""
-    out.write(f"model coverage: {coverage}{suffix}\n")
+    # Only present for a live GitHub adapter read; fixtures and unread
+    # candidates do not model a policy budget to report against.
+    if reviewed.coverage is not None:
+        file_coverage = reviewed.coverage
+        completeness = "complete" if file_coverage.complete_for_policy else "incomplete"
+        out.write(
+            f"file coverage: {file_coverage.scanned_files}/{file_coverage.eligible_files} eligible files "
+            f"scanned, {file_coverage.discovered_files} discovered ({completeness}_for_policy)\n"
+        )
+    model_coverage = artifact.result.grading_basis.value
+    suffix = " (deterministic-only)" if model_coverage == "absent" else ""
+    out.write(f"model coverage: {model_coverage}{suffix}\n")
     findings = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.findings)
     unverified = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.unverified)
     out.write(f"security findings: {findings or 'none'}\n")

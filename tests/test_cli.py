@@ -581,6 +581,246 @@ def test_github_names_forbidden_access_as_not_waitable() -> None:
     assert result.complete is False
 
 
+# --- GS-P0-001: priority filenames reach the scanner regardless of extension ---
+# --- GS-P0-008: what the count/byte caps left unscanned is never silent -------
+
+
+class _LiveGitHubTransport:
+    """Search, tree, and blob endpoints together -- the whole path a live
+    `main()` run takes, not a fixture directory read standing in for it."""
+
+    def __init__(self, search_items: list[dict[str, object]], tree: list[dict[str, str | int]], blobs: dict[str, tuple[int, str]]) -> None:
+        self.search_items = search_items
+        self.tree = tree
+        self.blobs = blobs
+        self.urls: list[str] = []
+
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        self.urls.append(url)
+        if "/search/repositories" in url:
+            return 200, {"X-RateLimit-Remaining": "10"}, json.dumps({"items": self.search_items}).encode()
+        if url.endswith("?recursive=1"):
+            return 200, {}, json.dumps({"tree": self.tree}).encode()
+        # Repository metadata (commit cadence, contributors, license) is
+        # outside what this suite is proving; answer it minimally so a
+        # missing response cannot mask the security assertions below inside
+        # an unrelated "repository metadata failed" incompleteness.
+        if "/commits" in url or "/contributors" in url:
+            return 200, {}, b"[]"
+        if url.endswith("/license"):
+            return 404, {}, b""
+        status, content = self.blobs[url]
+        return status, {}, json.dumps({"content": b64encode(content.encode()).decode()}).encode()
+
+
+def test_priority_path_matches_manifests_lockfiles_and_one_level_workflows() -> None:
+    # Given/When/Then: the allow-list is by exact filename or a flat workflow
+    # path, not a suffix or a nested directory.
+    assert cli._is_priority_path("package.json")
+    assert cli._is_priority_path("backend/package.json")
+    assert cli._is_priority_path(".github/workflows/ci.yml")
+    assert cli._is_priority_path(".github/workflows/release.yaml")
+    assert not cli._is_priority_path(".github/workflows/nested/ci.yml")
+    assert not cli._is_priority_path("workflows/ci.yml")
+    assert not cli._is_priority_path("poetry.lock")
+    assert not cli._is_priority_path("random.json")
+
+
+def test_live_adapter_finds_a_postinstall_hook_and_blocks_before_grading(tmp_path, capsys) -> None:
+    """GS-P0-001's own acceptance test: GitHub's tree -> GitHubClient.fetch_files
+    -> the postinstall rule in signals.py -> a blocked candidate the model never
+    sees. Not a FixtureTransport directory read, which is exactly what let this
+    bug ship undetected in the first place."""
+    # Given: a live tree whose only file is a package.json with a postinstall hook.
+    manifest = '{\n  "name": "x",\n  "scripts": {\n    "postinstall": "node install.js"\n  }\n}\n'
+    search_items = [{"full_name": "org/repo", "html_url": "https://github.com/org/repo", "stargazers_count": 3, "pushed_at": "2026-07-27T00:00:00Z"}]
+    transport = _LiveGitHubTransport(search_items, [_tree_entry("package.json", len(manifest))], {"blob://package.json": (200, manifest)})
+    grader = _Grader()
+    artifact_path = tmp_path / "run.json"
+
+    # When: a live (non-fixture) run reaches file selection through the real adapter.
+    exit_code = main(["run", "--query", "example", "--artifact", str(artifact_path)], transport=transport, grader=grader)
+    table = capsys.readouterr().out
+
+    # Then: package.json reached the scanner and the postinstall signal
+    # blocked the candidate at high severity before grading. The model is
+    # still consulted for the run-level smoke gate (synthetic digests, run
+    # once regardless of any candidate), so the precise claim is that
+    # org/repo's own content was never among what it was asked to grade.
+    assert exit_code == 0
+    assert not any("org/repo" in digest for digest in grader.seen)
+    assert "withheld" in table
+
+    explain_code = main(["explain", "org/repo", "--artifact", str(artifact_path)])
+    explained = capsys.readouterr().out
+    assert explain_code == 0
+    assert "postinstall at package.json" in explained
+    assert "risk: high\n" in explained
+
+
+def test_a_priority_manifest_survives_the_count_cap_even_ordered_last() -> None:
+    # Given: the file-count budget is already full of safe files before a
+    # malicious priority manifest appears as the tree's very last entry --
+    # exactly the padding attack GS-P0-008 names.
+    safe_entries = [_tree_entry(f"safe-{index}.py", 1) for index in range(SOURCE_FILE_COUNT_CAP)]
+    manifest = '{\n  "scripts": {\n    "postinstall": "node install.js"\n  }\n}\n'
+    tree = [*safe_entries, _tree_entry("package.json", len(manifest))]
+    blobs = {str(entry["url"]): (200, "x = 1\n") for entry in safe_entries}
+    blobs["blob://package.json"] = (200, manifest)
+    transport = _GitHubTransport(tree, blobs)
+
+    # When: source selection walks the whole tree.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+
+    # Then: the manifest was selected in addition to every safe file, not
+    # instead of one of them -- its tree position cost it nothing.
+    paths = [path for path, _ in fetched.files]
+    assert len(paths) == SOURCE_FILE_COUNT_CAP + 1
+    assert "package.json" in paths
+
+    # And: it still reaches the scanner and blocks the candidate.
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=lambda _: fetched,
+        grader=_Grader(),
+    )
+    entry = result.reviewed[0]
+    assert entry.severity == "high"
+    assert any(signal.kind == "postinstall" for signal in entry.findings)
+
+
+def test_source_coverage_survives_an_artifact_round_trip(tmp_path) -> None:
+    """The fixture-backed round-trip test never exercises this: fixtures never
+    set `coverage` at all, so a bug in its (de)serialization could pass every
+    other test in this file."""
+    # Given: a live run that actually populates SourceCoverage.
+    manifest = '{\n  "scripts": {\n    "postinstall": "node install.js"\n  }\n}\n'
+    search_items = [{"full_name": "org/repo", "html_url": "https://github.com/org/repo", "stargazers_count": 3, "pushed_at": "2026-07-27T00:00:00Z"}]
+    transport = _LiveGitHubTransport(
+        search_items,
+        [_tree_entry("package.json", len(manifest)), _tree_entry("a.py", 5)],
+        {"blob://package.json": (200, manifest), "blob://a.py": (200, "x=1\n")},
+    )
+    artifact_path = tmp_path / "run.json"
+
+    # When: the run is recorded and then replayed from its own bytes.
+    assert main(["run", "--query", "example", "--artifact", str(artifact_path)], transport=transport, grader=_Grader()) == 0
+    raw = artifact_path.read_bytes()
+    roundtripped = RunArtifact.from_bytes(raw).to_bytes()
+
+    # Then: byte-for-byte identical, and the coverage counts are the real ones.
+    assert roundtripped == raw
+    reviewed = json.loads(raw)["output"]["result"]["reviewed"][0]
+    assert reviewed["coverage"] == {
+        "discovered_files": 2,
+        "eligible_files": 2,
+        "scanned_files": 2,
+        "skipped_policy": [],
+        "skipped_error": [],
+    }
+
+
+def test_priority_files_still_respect_the_byte_caps() -> None:
+    # Given: exemption from the count cap is not exemption from every cap --
+    # an oversized manifest is still a resource-exhaustion vector.
+    transport = _GitHubTransport([_tree_entry("package.json", SOURCE_FILE_BYTE_CAP + 1)], {})
+    # When: source selection applies the per-file byte limit.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    # Then: the manifest is skipped, not silently truncated.
+    assert fetched.files == ()
+    assert any("byte cap" in skipped for skipped in fetched.skipped)
+
+
+def test_a_partial_count_capped_scan_that_found_nothing_is_not_reported_as_clean() -> None:
+    """GS-P0-008's exact scenario: 200 eligible files, only the count cap's
+    worth actually scanned, none of the twenty trip a signal. Severity must not
+    read the same as a full scan that found nothing."""
+    # Given: far more eligible source files than the count cap admits.
+    entries = [_tree_entry(f"clean-{index}.py", 1) for index in range(200)]
+    blobs = {str(entry["url"]): (200, "x = 1\n") for entry in entries[:SOURCE_FILE_COUNT_CAP]}
+    transport = _GitHubTransport(entries, blobs)
+
+    # When: source selection and screening both run.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=lambda _: fetched,
+        grader=_Grader(),
+    )
+
+    # Then: the coverage record admits what was left unscanned...
+    assert fetched.coverage.discovered_files == 200
+    assert fetched.coverage.eligible_files == 200
+    assert fetched.coverage.scanned_files == SOURCE_FILE_COUNT_CAP
+    assert fetched.coverage.complete_for_policy is False
+    # ...and severity is not the bare "none" a genuinely complete scan reports.
+    entry = result.reviewed[0]
+    assert entry.findings == ()
+    assert entry.severity == "none-found-in-scanned-files"
+    assert entry.severity != "none"
+    assert entry.coverage == fetched.coverage
+
+
+def test_a_partial_scan_is_never_rendered_as_clean_by_the_live_cli_path(tmp_path, capsys) -> None:
+    # Given: the same 200-eligible/20-scanned shape, reached through the full
+    # CLI rather than the pipeline function directly.
+    entries = [_tree_entry(f"clean-{index}.py", 1) for index in range(200)]
+    blobs = {str(entry["url"]): (200, "x = 1\n") for entry in entries[:SOURCE_FILE_COUNT_CAP]}
+    search_items = [{"full_name": "org/repo", "html_url": "https://github.com/org/repo", "stargazers_count": 3, "pushed_at": "2026-07-27T00:00:00Z"}]
+    transport = _LiveGitHubTransport(search_items, entries, blobs)
+    artifact_path = tmp_path / "run.json"
+
+    # When: a live run renders its normal ranked table.
+    exit_code = main(["run", "--query", "example", "--artifact", str(artifact_path)], transport=transport, grader=_Grader())
+    table = capsys.readouterr().out
+
+    # Then: the risk column names the coverage gap instead of a bare "none".
+    assert exit_code == 0
+    assert "none-found-in-scanned-files" in table
+
+    # And: explain names both the coverage gap and the risk it produces.
+    explain_code = main(["explain", "org/repo", "--artifact", str(artifact_path)])
+    explained = capsys.readouterr().out
+    assert explain_code == 0
+    assert f"file coverage: {SOURCE_FILE_COUNT_CAP}/200 eligible files scanned, 200 discovered (incomplete_for_policy)\n" in explained
+    assert "risk: none-found-in-scanned-files\n" in explained
+
+
+def test_a_run_where_every_eligible_file_is_policy_skipped_reports_no_coverage_not_clean() -> None:
+    """GS-P0-008's acceptance test: nothing was scanned at all, so the run must
+    not read as a clean pass."""
+    # Given: every discovered file fails the extension/priority allow-list --
+    # none is even eligible, let alone scanned.
+    transport = _GitHubTransport([_tree_entry("image.png", 10), _tree_entry("notes.txt", 10)], {})
+
+    # When: source selection and the pipeline both run.
+    fetched = GitHubClient(transport).fetch_files(cli.Candidate("org/repo", "org", "", 0, ""))
+    result = cli.run(
+        cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
+        fetch_files=lambda _: fetched,
+        grader=_Grader(),
+    )
+
+    # Then: zero files were ever read. Nothing was eligible either, so
+    # `complete_for_policy` is vacuously true here -- caps truncated nothing,
+    # because the extension allow-list itself found nothing to scan; that is
+    # a different fact from "clean," which is why the run still must not
+    # read as one.
+    assert fetched.files == ()
+    assert fetched.coverage.discovered_files == 2
+    assert fetched.coverage.eligible_files == 0
+    assert fetched.coverage.scanned_files == 0
+    assert len(fetched.coverage.skipped_policy) == 2
+    # ...and the reviewed candidate does not read as a clean pass: zero
+    # findings, but a severity distinct from a genuinely clean "none", and no
+    # grade was produced from an empty digest.
+    entry = result.reviewed[0]
+    assert entry.findings == ()
+    assert entry.severity != "none"
+    assert entry.severity == "unknown"
+    assert entry.grade is None
+
+
 def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -> None:
     # Given: search succeeds but source collection reaches an exhausted quota.
     response = json.dumps({"items": [{"full_name": "org/repo", "html_url": "https://github.com/org/repo"}]}).encode()

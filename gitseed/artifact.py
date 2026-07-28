@@ -12,6 +12,7 @@ from .grade.types import GradeResult
 from .pipeline.run import FetchedFiles, PipelineResult, Reviewed
 from .ports import RepositoryMetadata, RunRequest
 from .scoring import Feature, Recommendation, Score, ScoreInputs
+from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
 
 SCHEMA_VERSION = 3
@@ -145,6 +146,22 @@ def _files_from_dict(payload: dict | None) -> FetchedFiles | None:
         bool(payload["complete"]),
         payload["incomplete_because"],
         bool(payload["rate_limited"]),
+        _coverage_from_dict(payload.get("coverage")),
+    )
+
+
+def _coverage_from_dict(payload: dict | None) -> SourceCoverage | None:
+    """`.get("coverage")` so a schema-3 artifact recorded before this field
+    existed still replays -- it simply carries no coverage claim, the same
+    as a fixture read today."""
+    if payload is None:
+        return None
+    return SourceCoverage(
+        discovered_files=int(payload["discovered_files"]),
+        eligible_files=int(payload["eligible_files"]),
+        scanned_files=int(payload["scanned_files"]),
+        skipped_policy=tuple(SkippedFile(**item) for item in payload["skipped_policy"]),
+        skipped_error=tuple(SkippedFile(**item) for item in payload["skipped_error"]),
     )
 
 
@@ -189,6 +206,7 @@ def _result_from_dict(payload: dict) -> PipelineResult:
                 skipped_files=tuple(entry["skipped_files"]),
                 screening_basis=ClaimBasis(entry["screening_basis"]),
                 screened_files=tuple(entry["screened_files"]),
+                coverage=_coverage_from_dict(entry.get("coverage")),
             )
         )
     return PipelineResult(
