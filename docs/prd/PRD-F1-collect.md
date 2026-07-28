@@ -21,3 +21,19 @@ silently on a rate limit** — the seed's measured defect (0 processed) must not
 - [ ] Test that 429/403 (rate) and 403 (forbidden) are handled differently
 - [ ] Running the same query 2 times does not increase the DB row count
 - [ ] A network exception does not roll back already-committed rows
+
+## Record status (2026-07-28)
+
+**Persistence: satisfied, by a different design than described above.** F8 (`gitseed/storage.py`,
+`gitseed/storage_schema.py`) landed a versioned SQLite `run_artifacts` table that stores whole,
+immutable `RunArtifact` records with insert-only correction lineage (`corrects_run_id`) — not the
+per-candidate row store with a `repo` primary key this PRD's requirement 3 and AC describe. The
+requirement this PRD names is met; the shape it predicted is not what shipped. Recorded here so
+this reads as closed rather than outstanding.
+
+**`RateLimitExhausted`: ruled out, not implemented.** `CollectResult.complete` and
+`CollectResult.stopped_because` already carry a collection's incompleteness explicitly, and the
+run artifact records which port failed and why. A dedicated exception type would be a second way
+to say what the result type already says — two descriptions of the same fact drift apart the
+first time one of them is updated and the other is not. See commit trailers for the formal
+`Ruled-out:` record.
