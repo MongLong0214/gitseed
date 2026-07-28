@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import re
+import socket
 import sys
 import traceback
 from dataclasses import replace
@@ -736,7 +737,12 @@ def main(
             err.write(f"recorded decision commit {sha}\n")
         return 0
     except OSError as error:
-        err.write(f"run failed: {error}\n")
+        # Check if this is a timeout error and provide actionable guidance
+        if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
+            err.write(f"run failed: {error}\n")
+            err.write(f"fix: increase --grade-timeout (currently {args.grade_timeout} seconds)\n")
+        else:
+            err.write(f"run failed: {error}\n")
         # Normal CLI output must stay actionable; debug mode preserves diagnostics.
         if args.debug:
             traceback.print_exc(file=err)
