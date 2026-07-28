@@ -880,6 +880,43 @@ def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -
     assert "set GITHUB_TOKEN" not in errors.getvalue()
 
 
+def test_metadata_quota_exhaustion_marks_the_run_rate_limited_and_suggests_a_token(
+    tmp_path, monkeypatch
+) -> None:
+    # Given: source screening succeeds before commit metadata exhausts GitHub quota.
+    source = "def add(a, b):\n    return a + b\n"
+    headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "2000000000"}
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    class MetadataLimitedTransport(_LiveGitHubTransport):
+        def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+            if "/commits?" in url:
+                self.urls.append(url)
+                return 403, headers, b""
+            return super().get(url)
+
+    transport = MetadataLimitedTransport(
+        [{"full_name": "org/repo", "html_url": "https://github.com/org/repo"}],
+        [_tree_entry("main.py", len(source))],
+        {"blob://main.py": (200, source)},
+    )
+    errors = io.StringIO()
+    artifact = tmp_path / "run.json"
+
+    # When: the real CLI path reaches delayed metadata with only fake responses.
+    exit_code = main(
+        ["run", "--query", "example", "--artifact", str(artifact)],
+        transport=transport,
+        grader=_Grader(),
+        stderr=errors,
+    )
+
+    # Then: the recorded pipeline and the operator output retain the remedy.
+    assert exit_code == 2
+    assert RunArtifact.from_bytes(artifact.read_bytes()).result.rate_limited is True
+    assert "set GITHUB_TOKEN" in errors.getvalue()
+
+
 def test_pipeline_withholds_a_candidate_when_every_file_was_skipped() -> None:
     # Given: source selection deliberately yields no readable files.
     grader = _Grader()
