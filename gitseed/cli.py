@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import re
+import socket
 import sys
 import traceback
 from dataclasses import replace
@@ -36,7 +37,6 @@ PREFERRED_OLLAMA_MODELS: Final = (
     "qwen2.5-coder:7b",
     "qwen2.5-coder:1.5b",
 )
-OLLAMA_TAGS_URL: Final = "http://localhost:11434/api/tags"
 # A cold one-token reply from the local 32B model took about 23 seconds; a
 # multi-file digest needs several times that budget instead of the old 30-second default.
 DEFAULT_GRADE_TIMEOUT: Final = 120
@@ -94,13 +94,32 @@ class Grader(Protocol):
     def flags_malicious(self, digest: str) -> bool: ...
 
 
+def _resolve_ollama_host(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the Ollama host URL from OLLAMA_HOST environment variable or default.
+
+    Supports formats: "host:port", "http://host:port", "https://host:port".
+    Returns a URL base suitable for API calls (e.g., "http://host:port").
+    """
+    environment = os.environ if environ is None else environ
+    host = environment.get("OLLAMA_HOST", "localhost:11434")
+
+    # If it already starts with http:// or https://, use as-is
+    if host.startswith(("http://", "https://")):
+        return host.rstrip("/")
+
+    # Otherwise, assume it's "host:port" and prepend http://
+    return f"http://{host}"
+
+
 def resolve_model(transport: Transport, *, environ: Mapping[str, str] | None = None) -> tuple[str, str]:
     environment = os.environ if environ is None else environ
     explicit = environment.get("OLLAMA_MODEL")
     if explicit is not None:
         return explicit, "explicit OLLAMA_MODEL"
+    ollama_base = _resolve_ollama_host(environment)
+    tags_url = f"{ollama_base}/api/tags"
     try:
-        status, _, body = transport.get(OLLAMA_TAGS_URL)
+        status, _, body = transport.get(tags_url)
     except OSError as error:
         raise RuntimeError(
             "could not reach Ollama to find a grading model; looked for "
@@ -370,9 +389,10 @@ def _wall_clock(instant: datetime) -> str:
 class OllamaGrader:
     """The smallest local-Ollama adapter satisfying the existing grade protocol."""
 
-    def __init__(self, model: str, transport: UrllibTransport | None = None) -> None:
+    def __init__(self, model: str, transport: UrllibTransport | None = None, *, environ: Mapping[str, str] | None = None) -> None:
         self.model = model
         self.transport = UrllibTransport() if transport is None else transport
+        self.ollama_base = _resolve_ollama_host(environ)
 
     def evaluate(self, digest: str) -> GradeResult:
         result = self._ask(
@@ -395,8 +415,9 @@ class OllamaGrader:
         body = json.dumps(
             {"model": self.model, "prompt": prompt, "format": "json", "stream": False, "options": {"temperature": 0}}
         ).encode()
+        generate_url = f"{self.ollama_base}/api/generate"
         status, _, response = self.transport.request(
-            "POST", "http://localhost:11434/api/generate", body, {"Content-Type": "application/json"}
+            "POST", generate_url, body, {"Content-Type": "application/json"}
         )
         if status != 200:
             raise RuntimeError(f"Ollama returned HTTP {status}")
@@ -672,7 +693,7 @@ def main(
                 active_grader = UnavailableGrader(str(error))
             else:
                 err.write(f"grading model: {model} ({reason})\n")
-                active_grader = OllamaGrader(model, ollama_transport)
+                active_grader = OllamaGrader(model, ollama_transport, environ=os.environ)
         repository = fixture if fixture is not None else GitHubRepository(active_transport)
         collected = repository.search(args.query, args.limit)
         recorded = execute(
@@ -716,7 +737,12 @@ def main(
             err.write(f"recorded decision commit {sha}\n")
         return 0
     except OSError as error:
-        err.write(f"run failed: {error}\n")
+        # Check if this is a timeout error and provide actionable guidance
+        if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
+            err.write(f"run failed: {error}\n")
+            err.write(f"fix: increase --grade-timeout (currently {args.grade_timeout} seconds)\n")
+        else:
+            err.write(f"run failed: {error}\n")
         # Normal CLI output must stay actionable; debug mode preserves diagnostics.
         if args.debug:
             traceback.print_exc(file=err)
