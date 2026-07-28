@@ -30,6 +30,10 @@ but 1.5b produces 9/14 false positives + swapped fields. The seed does not tell 
 - [ ] Test that smoke results are cached by model tag and rerun when the tag changes
 - [ ] Everything passes **without a network** (fake client)
 
+> **Record status (2026-07-28)**: superseded by F6 (`gitseed/grade/smoke.py`, wired in
+> `gitseed/application.py`) — see `docs/prd/PRD-F3-grade.md`. Model-tag caching is ruled out for
+> lack of a measured problem; `run_smoke` recomputes every run and there is no cache to rerun.
+
 ## T-302 · Grading client
 
 **Module**: `gitseed/grade/client.py`
