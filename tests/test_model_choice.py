@@ -25,6 +25,46 @@ class TagsTransport:
         return 200, {}, json.dumps({"response": json.dumps({"idea": 8, "skill": 7, "description": "useful"})}).encode()
 
 
+class GenerateTransport:
+    def __init__(self, response: str) -> None:
+        self.response = response
+
+    def request(
+        self, method: str, url: str, data: bytes | None = None, extra_headers: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], bytes]:
+        return 200, {}, json.dumps({"response": self.response}).encode()
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (json.dumps({"idea": "x" * 200, "skill": 7, "description": "useful"}), "idea"),
+        (json.dumps({"skill": 7, "description": "useful"}), "missing idea"),
+        (json.dumps({"idea": 7.5, "skill": 7, "description": "useful"}), "idea"),
+        (json.dumps({"idea": 11, "skill": 7, "description": "useful"}), "idea"),
+        (json.dumps({"idea": 7, "skill": 7, "description": 3}), "description"),
+        ("[]", "JSON object"),
+    ],
+)
+def test_grader_names_a_model_that_breaks_the_grade_response_contract(response: str, expected: str) -> None:
+    # Given: a fake Ollama response that is JSON but cannot produce a valid grade.
+    grader = OllamaGrader("qwen2.5-coder:1.5b", GenerateTransport(response), environ={})
+
+    # When: the grader evaluates a candidate without contacting a model.
+    with pytest.raises(ValueError) as raised:
+        grader.evaluate("repository: example/tool\n")
+
+    # Then: the failure names the model, contract, bounded output, and bad field.
+    message = str(raised.value)
+    assert "model qwen2.5-coder:1.5b" in message
+    assert "JSON object with integer idea and skill from 1 to 10" in message
+    assert "output shown up to 160 characters" in message
+    assert expected in message
+    if "x" * 200 in response:
+        assert "x" * 100 in message
+        assert "x" * 161 not in message
+
+
 def test_explicit_ollama_model_wins_without_tags_lookup() -> None:
     # Given: an operator has made an explicit model choice.
     transport = TagsTransport(["qwen2.5-coder:32b"])

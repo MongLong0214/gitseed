@@ -40,6 +40,7 @@ PREFERRED_OLLAMA_MODELS: Final = (
 # A cold one-token reply from the local 32B model took about 23 seconds; a
 # multi-file digest needs several times that budget instead of the old 30-second default.
 DEFAULT_GRADE_TIMEOUT: Final = 120
+MODEL_OUTPUT_EXCERPT_CHARS: Final = 160
 EXIT_CODES: Final = "Exit codes: 0 complete; 1 invalid invocation or operational failure; 2 incomplete run."
 SCORE_LIMIT: Final = "Score measures small-versus-medium size; it does not predict that a repository will take off."
 SOURCE_FILE_BYTE_CAP: Final = 100_000
@@ -409,23 +410,49 @@ class OllamaGrader:
         self.ollama_base = _resolve_ollama_host(environ)
 
     def evaluate(self, digest: str) -> GradeResult:
-        result = self._ask(
+        output = self._ask(
             "Return JSON with integer idea and skill from 1 to 10 plus a concise description.\n\n"
             + digest
         )
+        try:
+            result = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise self._invalid_grade_response(output, "not valid JSON") from error
+        if not isinstance(result, dict):
+            raise self._invalid_grade_response(output, "not a JSON object")
+        for field in ("idea", "skill"):
+            if field not in result:
+                raise self._invalid_grade_response(output, f"missing {field}")
+            value = result[field]
+            if type(value) is not int:
+                raise self._invalid_grade_response(output, f"{field} is not an integer")
+            if not 1 <= value <= 10:
+                raise self._invalid_grade_response(output, f"{field} is outside 1..10")
+        description = result.get("description")
+        if not isinstance(description, str):
+            raise self._invalid_grade_response(output, "description is not a string")
         return GradeResult(
-            idea=int(result["idea"]),
-            skill=int(result["skill"]),
-            description=str(result["description"]),
+            idea=result["idea"],
+            skill=result["skill"],
+            description=description,
             model=self.model,
             temperature=0.0,
             prompt_version="cli-v1",
         )
 
     def flags_malicious(self, digest: str) -> bool:
-        return bool(self._ask("Return JSON with boolean malicious.\n\n" + digest).get("malicious", False))
+        result = json.loads(self._ask("Return JSON with boolean malicious.\n\n" + digest))
+        return bool(result.get("malicious", False)) if isinstance(result, dict) else False
 
-    def _ask(self, prompt: str) -> dict[str, object]:
+    def _invalid_grade_response(self, output: str, problem: str) -> ValueError:
+        excerpt = output[:MODEL_OUTPUT_EXCERPT_CHARS]
+        return ValueError(
+            f"grading model {self.model} did not return the requested JSON object with integer idea and skill from 1 to 10 "
+            f"plus a concise description: {problem}; it returned {excerpt!r} "
+            f"(output shown up to {MODEL_OUTPUT_EXCERPT_CHARS} characters). Choose another model."
+        )
+
+    def _ask(self, prompt: str) -> str:
         body = json.dumps(
             {"model": self.model, "prompt": prompt, "format": "json", "stream": False, "options": {"temperature": 0}}
         ).encode()
@@ -435,7 +462,7 @@ class OllamaGrader:
         )
         if status != 200:
             raise RuntimeError(f"Ollama returned HTTP {status}")
-        return json.loads(json.loads(response)["response"])
+        return str(json.loads(response)["response"])
 
 
 class UnavailableGrader:

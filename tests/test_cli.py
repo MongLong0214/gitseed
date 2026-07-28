@@ -870,7 +870,7 @@ def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     errors = io.StringIO()
     # When: an unauthenticated run stops for the exhausted quota.
-    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b""), (403, headers, b"")]), grader=_Grader(), stderr=errors) == 2
+    assert main(["run", "--query", "example"], transport=_ScriptedTransport([(200, {}, response), (403, headers, b""), (200, {}, b"[]"), (200, {}, b"[]"), (200, {}, b"")]), grader=_Grader(), stderr=errors) == 2
     # Then: it gets the one actionable next step.
     assert "set GITHUB_TOKEN" in errors.getvalue()
 

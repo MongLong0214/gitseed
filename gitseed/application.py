@@ -19,7 +19,7 @@ from .artifact import (
 from .collect.search import Candidate, CollectResult
 from .grade.smoke import SmokeResult, run_smoke
 from .grade.types import GradeResult
-from .pipeline.run import FileFetchError, FetchedFiles, run
+from .pipeline.run import BLOCKING_SEVERITY, FileFetchError, FetchedFiles, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .scoring import Recommendation, ScoreInputs, score
 
@@ -43,6 +43,7 @@ def execute(
     failures: list[PortFailure] = []
     trace_failures: dict[str, list[PortFailure]] = {}
     metadata: dict[str, RepositoryMetadata | None] = {}
+    metadata_attempted: set[str] = set()
     files: dict[str, FetchedFiles] = {}
     grades: dict[str, GradeResult] = {}
 
@@ -64,9 +65,12 @@ def execute(
 
     for candidate in collected.candidates:
         trace_failures[candidate.repo] = []
+        metadata[candidate.repo] = None
+
+    def observe_metadata(candidate: Candidate) -> None:
         if started_at is None:
-            metadata[candidate.repo] = None
-            continue
+            return
+        metadata_attempted.add(candidate.repo)
         try:
             metadata[candidate.repo] = ports.repository.metadata(candidate, started_at)
         except Exception as error:  # noqa: BROAD_EXCEPT_OK -- every port failure belongs in the artifact
@@ -78,7 +82,6 @@ def execute(
             )
             failures.append(failure)
             trace_failures[candidate.repo].append(failure)
-            metadata[candidate.repo] = None
 
     def read(candidate: Candidate) -> FetchedFiles:
         try:
@@ -107,7 +110,7 @@ def execute(
 
     smoke = run_smoke(ports.model) if model_smoke is None else model_smoke
     model = _RecordingModel(ports, grades, failures, trace_failures) if smoke.passed else None
-    result = run(collected, fetch_files=read, grader=model)
+    result = run(collected, fetch_files=read, grader=model, on_survivor=observe_metadata)
 
     if smoke.passed is False:
         result.mark_incomplete(
@@ -118,6 +121,8 @@ def execute(
     if started_at is None:
         result.mark_incomplete("clock failed; repository metadata was not read")
     for candidate in collected.candidates:
+        if candidate.repo not in metadata_attempted:
+            continue
         observed = metadata[candidate.repo]
         if observed is None:
             result.mark_incomplete(f"{candidate.repo}: repository metadata failed")
