@@ -11,7 +11,7 @@ import pytest
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
-from gitseed.pipeline.run import PipelineResult, Reviewed, ranked, run
+from gitseed.pipeline.run import FileFetchError, PipelineResult, Reviewed, ranked, run
 from gitseed.screen.signals import HIGH, Signal
 
 CLEAN = [("main.py", "def add(a, b):\n    return a + b\n")]
@@ -210,6 +210,34 @@ def test_unreadable_source_is_absent_not_a_clean_security_claim() -> None:
     assert clean.screened_files == ("main.py",)
     assert absent.screening_basis is ClaimBasis.ABSENT
     assert absent.screened_files == ()
+
+
+def test_a_forbidden_resource_is_absent_not_a_clean_or_false_result() -> None:
+    """Issue #6: the branch a real 403-forbidden response drives.
+
+    `GitHubClient.fetch_files` raises `FileFetchError`, not a bare exception, for
+    a forbidden resource -- a distinct branch from the generic-exception path
+    covered by `test_unreadable_source_is_absent_not_a_clean_security_claim`
+    above. Mutating this branch's `severity` from `"unknown"` to `"none"` (a
+    clean scan) passed the full suite before this test existed: nothing checked
+    it. A forbidden resource must read the same as any other absent evidence --
+    not as "screened and found nothing" and not as a falsy-but-present score.
+    """
+
+    def forbidden(_: Candidate):
+        raise FileFetchError("GitHub access is forbidden; waiting will not help")
+
+    result = run(
+        CollectResult(candidates=[candidate("torvalds/linux")]),
+        fetch_files=forbidden,
+        grader=Grader(),
+    )
+    entry = result.reviewed[0]
+    assert entry.severity == "unknown"
+    assert entry.screening_basis is ClaimBasis.ABSENT
+    assert entry.score is None
+    assert entry.withheld is not None and "forbidden" in entry.withheld
+    assert result.complete is False
 
 
 def test_a_blocked_candidate_does_not_make_the_run_incomplete() -> None:
