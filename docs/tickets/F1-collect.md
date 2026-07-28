@@ -124,14 +124,77 @@ propagates through the entire pipeline.
 - [x] `wait=True` waits until reset and retries only once, then stops if still limited.
 - [x] The AC above runs without a network using `FakeTransport`.
 
-## <a id="remaining-live-evidence-issue-6"></a> Remaining live evidence — issue #6
+## <a id="remaining-live-evidence-issue-6"></a> Live evidence — issue #6 (closed)
 
-The 403 permissions-error branch has been verified only with injected responses. To close issue #6,
-retain the following evidence together from an actual GitHub response.
+Closed 2026-07-28. The 403 permissions-error branch had been verified only with injected
+responses. The evidence below is from an actual GitHub response, captured live through
+gitseed's own `UrllibTransport.get()` — not reconstructed.
 
-- The status code is 403, `X-RateLimit-Remaining` is greater than 0, and `Retry-After` is absent.
-- The result is `complete=False`, and the stop reason points to a permissions problem.
-- The process does not wait for the rate-limit reset or retry the same request.
+**Capture.** `GET repos/torvalds/linux/collaborators` and `GET
+repos/torvalds/linux/actions/secrets` — a repository the token can see, on two endpoints its
+scope does not cover. GitHub hides a repository you cannot see at all behind a 404, never a
+403, so a repo we cannot see does not exercise this branch; a repo we can see but lack
+permission on does.
 
-Do not record the token. From the original response, retain only the status code and headers
-needed for the decisions above.
+- Status: `403`
+- `X-RateLimit-Remaining`: `4900` / `4982` (budget left, of a `5000` limit)
+- `Retry-After`: absent
+- Body: `{"message": "Must have push access to view repository collaborators.", ...,
+  "status": "403"}`
+
+No token was recorded; only the status, the `X-RateLimit-*` trio, and the body are kept.
+
+**Result.** Feeding that captured response into `classify()` returns `"forbidden"`. Feeding
+it into `collect()` (with `wait=True`, to make the negative provable) returns
+`CollectResult(complete=False, stopped_because="forbidden — a permissions problem, not a
+budget one", candidates=[])`; `sleep` was never called and the transport was called exactly
+once — no wait, no retry. `gitseed/cli.py`'s file-fetch mapping (`_github_response_error`)
+turns the same response into `FileFetchError("GitHub access is forbidden; waiting will not
+help")`, distinct from the rate-limited path's "quota resets at ..." / "retry at ..."
+messages verified live in issue T-209 (commit 874bde0).
+
+**ABSENT, not false, not clean.** Carried through `pipeline.run.run()`, a forbidden read
+produces `Reviewed(severity="unknown", screening_basis=ClaimBasis.ABSENT, score=None,
+withheld="files could not be read (...)")` — the same shape F11 uses for any unreadable
+source, never the shape of a clean scan (`severity="none"`,
+`screening_basis=ClaimBasis.DETERMINISTIC`). Run through `execute()` and the CLI, the run
+artifact and `gitseed explain` both carry it: `security coverage: absent (0 files)`,
+`--json`'s `"severity": "unknown"` with a non-null `"withheld"`, and exit code `2`.
+
+Confirmed by mutation: changing `severity="unknown"` to `severity="none"` in the
+`FileFetchError` branch of `gitseed/pipeline/run.py` passed the full suite that existed
+before this ticket closed — nothing checked that specific branch's severity value (the
+sibling generic-`Exception` branch was already covered by
+`test_unreadable_source_is_absent_not_a_clean_security_claim`, but the `FileFetchError`
+branch a real 403 actually raises was not). `tests/test_pipeline.py::test_a_forbidden_resource_is_absent_not_a_clean_or_false_result`
+and the now-strengthened `tests/test_cli.py::test_github_names_forbidden_access_as_not_waitable`
+both catch it.
+
+**Three-way distinction.** 404 not-found, 403 forbidden, and 403 rate-limited are all kept
+apart in code and in output:
+
+| case | status | key header(s) | `classify()` | message |
+|---|---|---|---|---|
+| not-found | 404 | — | `"error"` | `GitHub returned HTTP 404` |
+| forbidden | 403 | budget left, no `Retry-After` | `"forbidden"` | `GitHub access is forbidden; waiting will not help` |
+| rate-limited (exhausted) | 403 | `X-RateLimit-Remaining: 0` | `"rate-limited"` | `GitHub rate limit exhausted; quota resets at ...` |
+| rate-limited (secondary) | 403 | `Retry-After` present | `"rate-limited"` | `GitHub secondary rate limit; retry at ...` |
+
+**Finding, not a defect in the above.** `classify()`'s taxonomy has four buckets (`ok`,
+`rate-limited`, `forbidden`, `error`), not five. A 404 is never confused with either 403
+cause — different status code, different `kind` — but it is not given its own `kind`
+either; it falls into the same generic `"error"` bucket as a 500 or any other unexpected
+status. Nothing downstream can branch on "not found" specifically without re-reading the raw
+status code; only the propagated message string (`GitHub returned HTTP {status}`) still
+names it. This does not weaken the distinction issue #6 asked about, but it is a real gap if
+a future ticket wants not-found-specific handling (e.g., a renamed or deleted repository
+treated differently from a transient 500).
+
+Regression tests added, closing the loop:
+`tests/test_collect.py::TestForbiddenVersusExhausted::test_403_forbidden_is_never_classified_the_same_as_404_not_found`,
+`tests/test_collect.py::TestTruncationIsReported::test_a_live_captured_forbidden_response_is_a_permissions_problem_not_a_wait`
+(uses the real captured header and body values above),
+`tests/test_pipeline.py::test_a_forbidden_resource_is_absent_not_a_clean_or_false_result`, and
+a strengthened `tests/test_cli.py::test_github_names_forbidden_access_as_not_waitable` (now
+uses budget-left headers matching the live capture instead of empty ones, and asserts
+`severity`, `screening_basis`, and `score` alongside the withheld message).

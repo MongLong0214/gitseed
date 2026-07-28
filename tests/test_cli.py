@@ -17,6 +17,7 @@ from gitseed.cli import (
     GitHubClient,
     main,
 )
+from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
@@ -553,16 +554,31 @@ def test_github_names_secondary_limiting_for_a_retry_after_response() -> None:
 
 
 def test_github_names_forbidden_access_as_not_waitable() -> None:
-    # Given: GitHub refuses a tree request without any rate-limit signal.
-    transport = _GitHubTransport([], {}, tree_response=(403, {}))
+    # Given: GitHub refuses a tree request with quota left and no Retry-After --
+    # issue #6's real, live-verified shape (2026-07-28, GET
+    # repos/torvalds/linux/collaborators through gitseed's own UrllibTransport):
+    # HTTP 403, X-RateLimit-Remaining in the thousands, no Retry-After header,
+    # body {"message": "Must have push access...", "status": "403"}. Budget-left
+    # headers (not the empty ones a synthetic 403 might use) are what actually
+    # distinguish this from the rate-limited branch in classify().
+    real_forbidden_headers = {"X-RateLimit-Limit": "5000", "X-RateLimit-Remaining": "4900"}
+    transport = _GitHubTransport([], {}, tree_response=(403, real_forbidden_headers))
     # When: the candidate reaches file collection.
     result = cli.run(
         cli.CollectResult(candidates=[cli.Candidate("org/repo", "org", "", 0, "")]),
         fetch_files=GitHubClient(transport).fetch_files,
         grader=_Grader(),
     )
-    # Then: the withheld reason does not suggest a futile wait.
-    assert "waiting will not help" in (result.reviewed[0].withheld or "")
+    # Then: the withheld reason does not suggest a futile wait, and the absence of
+    # evidence is recorded as absent -- not as "none" (a clean scan) and not as a
+    # falsy-but-present score. This is F11's discipline reaching the collection
+    # layer: a resource that could not be read is not a resource that had nothing.
+    entry = result.reviewed[0]
+    assert "waiting will not help" in (entry.withheld or "")
+    assert entry.severity == "unknown"
+    assert entry.screening_basis is ClaimBasis.ABSENT
+    assert entry.score is None
+    assert result.complete is False
 
 
 def test_rate_limited_run_suggests_a_token_only_when_one_is_unset(monkeypatch) -> None:
