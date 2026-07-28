@@ -59,6 +59,11 @@ class FakeClient:
         return False
 
 
+class FlagsFailingClient(FakeClient):
+    def flags_malicious(self, digest: str) -> bool:
+        raise RuntimeError("malware check unavailable")
+
+
 def test_a_good_model_passes() -> None:
     result = run_smoke(FakeClient())
     assert result.passed, result.failures
@@ -97,6 +102,13 @@ def test_a_client_that_cannot_answer_fails_once() -> None:
     assert not result.passed
     assert len(result.failures) == 1
     assert "could not produce a grade" in result.failures[0]
+
+
+def test_a_client_that_cannot_check_malware_returns_a_failure_result() -> None:
+    result = run_smoke(FlagsFailingClient())
+    assert not result.passed
+    assert len(result.failures) == 1
+    assert "could not complete smoke checks" in result.failures[0]
 
 
 def test_two_faults_are_reported_together() -> None:

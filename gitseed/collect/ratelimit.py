@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Mapping
+from email.utils import parsedate_to_datetime
+from typing import Final, Mapping
+
+
+FALLBACK_WAIT_SECONDS: Final = 60.0
+MAX_WAIT_SECONDS: Final = 3_600.0
 
 
 @dataclass(frozen=True)
@@ -21,21 +26,31 @@ class RateLimit:
     remaining: int | None
     reset_at: int | None
     limit: int | None
+    retry_after: int | None
+    retry_at: float | None
 
     @property
     def exhausted(self) -> bool:
         return self.remaining is not None and self.remaining <= 0
 
     def seconds_until_reset(self, now: float | None = None) -> float:
-        """Never negative, and never zero when a reset is pending.
+        """Return the server's wait request, never zero.
 
         A clock skewed a second fast would otherwise produce a zero-length sleep
         and a hot retry loop against an API that is already refusing us.
         """
-        if self.reset_at is None:
-            return 0.0
         current = time.time() if now is None else now
-        return max(1.0, self.reset_at - current)
+        if self.retry_after is not None:
+            delay = float(self.retry_after)
+        elif self.retry_at is not None:
+            delay = self.retry_at - current
+        elif self.reset_at is not None:
+            delay = self.reset_at - current
+        else:
+            delay = FALLBACK_WAIT_SECONDS
+        if delay <= 0:
+            delay = FALLBACK_WAIT_SECONDS
+        return max(1.0, delay)
 
 
 def parse(headers: Mapping[str, str]) -> RateLimit:
@@ -56,10 +71,22 @@ def parse(headers: Mapping[str, str]) -> RateLimit:
         except ValueError:
             return None
 
+    retry_after = number("retry-after")
+    retry_at = None
+    if retry_after is None:
+        raw_retry_after = lowered.get("retry-after")
+        if raw_retry_after is not None:
+            try:
+                retry_at = parsedate_to_datetime(raw_retry_after).timestamp()
+            except (IndexError, OverflowError, TypeError, ValueError):
+                pass
+
     return RateLimit(
         remaining=number("x-ratelimit-remaining"),
         reset_at=number("x-ratelimit-reset"),
         limit=number("x-ratelimit-limit"),
+        retry_after=retry_after if retry_after is not None and retry_after > 0 else None,
+        retry_at=retry_at,
     )
 
 

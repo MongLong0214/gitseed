@@ -74,7 +74,6 @@ class TestRateLimitParsing:
         limit = parse({"X-RateLimit-Reset": "100"})
         assert limit.seconds_until_reset(now=1_000_000) >= 1.0
 
-
 class TestForbiddenVersusExhausted:
     """GitHub says 403 for both. Confusing them means either waiting an hour for
     a permissions error or hammering an API that asked us to stop."""
@@ -158,6 +157,13 @@ class TestTruncationIsReported:
         assert not result.complete
         assert "rate limited" in (result.stopped_because or "")
 
+    def test_distant_reset_records_server_distance_and_cap(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "14400"}
+        result = collect("q", transport=FakeTransport([(403, headers, b"{}")]), now=lambda: 0)
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 14400s; retry wait capped at 3600s"
+        )
+
     def test_partial_results_are_kept_and_flagged(self) -> None:
         transport = FakeTransport(
             [(200, OK, page(["a/one", "a/two"])), (403, EXHAUSTED, b"{}")]
@@ -226,9 +232,77 @@ class TestWaiting:
     def test_still_limited_after_waiting_gives_up_rather_than_looping(self) -> None:
         transport = FakeTransport([(403, EXHAUSTED, b"{}")])
         slept: list[float] = []
-        result = collect("q", transport=transport, wait=True, sleep=slept.append)
+        result = collect(
+            "q",
+            transport=transport,
+            wait=True,
+            sleep=slept.append,
+            now=lambda: 1_999_999_940,
+        )
         assert not result.complete
         assert len(slept) == 1
+
+    def test_retry_after_seconds_is_waited_before_retrying(self) -> None:
+        transport = FakeTransport(
+            [(403, {"Retry-After": "45"}, b"{}"), (200, OK, page(["a/one"]))]
+        )
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 100)
+        assert result.complete
+        assert slept == [45.0]
+
+    def test_retry_after_http_date_is_waited_before_retrying(self) -> None:
+        transport = FakeTransport(
+            [
+                (
+                    403,
+                    {"Retry-After": "Thu, 01 Jan 1970 00:02:30 GMT"},
+                    b"{}",
+                ),
+                (200, OK, page(["a/one"])),
+            ]
+        )
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 100)
+        assert result.complete
+        assert slept == [50.0]
+
+    def test_a_rate_limit_without_headers_waits_for_the_fallback(self) -> None:
+        transport = FakeTransport([(429, {}, b"{}"), (200, OK, page(["a/one"]))])
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append)
+        assert result.complete
+        assert slept == [60.0]
+
+    def test_distant_reset_sleeps_to_cap_and_reports_it(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "14400"}
+        transport = FakeTransport([(403, headers, b"{}")])
+        slept: list[float] = []
+        with pytest.warns(RuntimeWarning, match="capped at 3600s; server requested 14400s"):
+            result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 0)
+        assert not result.complete
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 14400s; retry wait capped at 3600s; "
+            "still rate limited after waiting"
+        )
+        assert slept == [3600.0]
+
+    def test_normal_reset_is_reported_and_slept_without_a_cap(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "60"}
+        slept: list[float] = []
+        result = collect(
+            "q",
+            transport=FakeTransport([(403, headers, b"{}")]),
+            wait=True,
+            sleep=slept.append,
+            now=lambda: 0,
+        )
+        assert not result.complete
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 60s; still rate limited after waiting"
+        )
+        assert "capped" not in (result.stopped_because or "")
+        assert slept == [60.0]
 
 
 class TestPaging:
