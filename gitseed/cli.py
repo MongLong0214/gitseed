@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
 from .application import execute, re_evaluate, render, replay
-from .artifact import ArtifactReviewed, RunArtifact
+from .artifact import ArtifactCollection, ArtifactReviewed, RunArtifact
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
@@ -160,6 +160,8 @@ class FixtureTransport:
         self.items: list[dict[str, str | int]] = list(payload["candidates"])
         self.complete = bool(payload.get("complete", True))
         self.stopped_because = payload.get("stopped_because")
+        self.total_count = int(payload.get("total_count", len(self.items)))
+        self.incomplete_results = bool(payload.get("incomplete_results", False))
         self._files = {str(item["full_name"]): str(item.get("files", item["full_name"])) for item in self.items}
         self.calls: list[tuple[str, str]] = []
 
@@ -168,7 +170,13 @@ class FixtureTransport:
         page = int(query.get("page", ["1"])[0])
         per_page = int(query.get("per_page", ["30"])[0])
         start = (page - 1) * per_page
-        return 200, {"X-RateLimit-Remaining": "29"}, json.dumps({"items": self.items[start:start + per_page]}).encode()
+        return 200, {"X-RateLimit-Remaining": "29"}, json.dumps(
+            {
+                "items": self.items[start:start + per_page],
+                "total_count": self.total_count,
+                "incomplete_results": self.incomplete_results,
+            }
+        ).encode()
 
     def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         root = self.directory / self._files[candidate.repo]
@@ -568,7 +576,19 @@ def _render_radar(
     coverage = artifact.result.grading_basis.value
     suffix = " (deterministic-only)" if coverage == "absent" else ""
     out.write(f"model coverage: {coverage}{suffix}\n")
+    out.write(_candidate_coverage(artifact.collection) + "\n")
     out.write(_table_rows(records) + "\n")
+
+
+def _candidate_coverage(collection: ArtifactCollection) -> str:
+    total = "unknown" if collection.total_count is None else str(collection.total_count)
+    if collection.complete_for_search:
+        state = "complete"
+    elif collection.incomplete_results:
+        state = "partial: GitHub reported a partial search"
+    else:
+        state = "partial"
+    return f"candidate coverage: {len(collection.candidates)}/{total} search results ({state})"
 
 
 def _render(path: Path) -> RunArtifact:

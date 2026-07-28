@@ -103,6 +103,56 @@ class TestForbiddenVersusExhausted:
 
 
 class TestTruncationIsReported:
+    def test_search_timeout_is_recorded_alongside_its_reported_total(self) -> None:
+        # Given: GitHub returns candidates from a search it says timed out.
+        body = json.dumps(
+            {
+                "incomplete_results": True,
+                "total_count": 4,
+                "items": [
+                    {
+                        "full_name": "a/one",
+                        "html_url": "https://github.com/a/one",
+                        "stargazers_count": 7,
+                        "pushed_at": "2026-07-01T00:00:00Z",
+                    }
+                ],
+            }
+        ).encode()
+
+        # When: collection accepts the returned candidates.
+        result = collect("q", transport=FakeTransport([(200, OK, body)]))
+
+        # Then: the partial search and its count survive beside the candidate.
+        assert result.search_incomplete is True
+        assert result.total_count == 4
+        assert result.complete_for_search is False
+
+    def test_reported_total_larger_than_retrieved_is_partial(self) -> None:
+        # Given: GitHub completes the response but its count exceeds the candidates returned.
+        body = json.dumps(
+            {
+                "incomplete_results": False,
+                "total_count": 2,
+                "items": [
+                    {
+                        "full_name": "a/one",
+                        "html_url": "https://github.com/a/one",
+                        "stargazers_count": 7,
+                        "pushed_at": "2026-07-01T00:00:00Z",
+                    }
+                ],
+            }
+        ).encode()
+
+        # When: the requested page has been collected.
+        result = collect("q", transport=FakeTransport([(200, OK, body)]))
+
+        # Then: a complete transport response is not mistaken for a complete candidate set.
+        assert result.complete is True
+        assert result.total_count == 2
+        assert result.complete_for_search is False
+
     def test_a_rate_limit_marks_the_result_incomplete(self) -> None:
         result = collect("q", transport=FakeTransport([(403, EXHAUSTED, b"{}")]))
         assert not result.complete
