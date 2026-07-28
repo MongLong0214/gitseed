@@ -228,6 +228,70 @@ def test_recorded_run_renders_offline_with_identical_output(tmp_path, capsys) ->
     assert rendered.err == "source: render artifact\n"
 
 
+def test_replay_recomputes_when_recorded_engines_match_and_reports_it(tmp_path, capsys) -> None:
+    # Given: an artifact retains every port response and the current engine versions.
+    artifact = tmp_path / "run.json"
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--source-mode",
+            "full-source",
+            "--artifact",
+            str(artifact),
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    # When: the caller requests a replay.
+    exit_code = main(["replay", str(artifact)])
+
+    # Then: it recomputes with no new I/O and says its engines match.
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "recomputed stored responses; engine versions match current code" in captured.err
+
+
+def test_replay_reports_a_changed_screening_engine_and_defaults_to_not_recomputing(tmp_path, capsys) -> None:
+    # Given: a complete artifact whose screening engine was recorded at another version.
+    artifact = tmp_path / "run.json"
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--source-mode",
+            "full-source",
+            "--artifact",
+            str(artifact),
+        ]
+    ) == 0
+    artifact.write_bytes(artifact.read_bytes().replace(b'"screening":"screening-v1"', b'"screening":"screening-v0"'))
+    capsys.readouterr()
+
+    # When: replay uses its safe default.
+    exit_code = main(["replay", str(artifact)])
+
+    # Then: it names the changed engine and leaves recomputation to the caller.
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "screening engine changed: recorded screening-v0, current screening-v1" in captured.err
+    assert "--allow-engine-mismatch" in captured.err
+
+    # When: the caller explicitly allows recomputation with current code.
+    allowed_code = main(["replay", str(artifact), "--allow-engine-mismatch"])
+
+    # Then: the output names the changed engine instead of calling it a replay.
+    allowed = capsys.readouterr()
+    assert allowed_code == 0
+    assert "recomputed stored responses with changed engines: screening engine changed" in allowed.err
+
+
 def test_radar_render_cannot_reach_approval_without_disabling_dry_run(tmp_path, monkeypatch, capsys) -> None:
     # Given: a canonical artifact and an approval path that must stay untouched.
     artifact = tmp_path / "run.json"
@@ -578,7 +642,7 @@ def test_github_names_an_exhausted_quota_and_reports_it_once_for_the_run() -> No
     # Then: each withheld record is actionable, while the run-level cause is not repeated.
     assert all("rate limit exhausted" in (entry.withheld or "") for entry in result.reviewed)
     assert "2033-05-18" in result.incomplete_because[0]
-    assert result.incomplete_because == [result.incomplete_because[0]]
+    assert result.incomplete_because == (result.incomplete_because[0],)
 
 
 def test_github_names_secondary_limiting_for_a_retry_after_response() -> None:

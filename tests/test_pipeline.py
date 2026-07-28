@@ -96,9 +96,9 @@ def test_a_truncated_collection_makes_the_whole_run_incomplete() -> None:
 def test_a_complete_run_that_found_nothing_is_still_complete() -> None:
     """The distinction the whole module exists for."""
     result = run(CollectResult(candidates=[]), fetch_files=files_for({}), grader=Grader())
-    assert result.reviewed == []
+    assert result.reviewed == ()
     assert result.complete is True
-    assert result.incomplete_because == []
+    assert result.incomplete_because == ()
 
 
 def test_unreadable_files_do_not_end_the_run_but_are_recorded() -> None:
@@ -318,9 +318,9 @@ def test_ranking_is_total_so_two_runs_agree() -> None:
     assert [e.candidate.repo for e in first] == ["a/a", "a/b", "a/c"]
 
 
-def test_mark_incomplete_keeps_every_reason_in_order() -> None:
+def test_with_incomplete_keeps_every_reason_in_order() -> None:
     result = PipelineResult()
-    result.mark_incomplete("first")
-    result.mark_incomplete("second")
+    result = result.with_incomplete("first")
+    result = result.with_incomplete("second")
     assert result.complete is False
-    assert result.incomplete_because == ["first", "second"]
+    assert result.incomplete_because == ("first", "second")

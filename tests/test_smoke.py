@@ -67,7 +67,7 @@ class FlagsFailingClient(FakeClient):
 def test_a_good_model_passes() -> None:
     result = run_smoke(FakeClient())
     assert result.passed, result.failures
-    assert result.failures == []
+    assert result.failures == ()
     assert result.model == "fake:1b"
 
 

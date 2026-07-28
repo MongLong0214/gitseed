@@ -17,7 +17,7 @@ from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
-from .application import execute, re_evaluate, render, replay
+from .application import engine_version_mismatches, execute, re_evaluate, render, replay
 from .artifact import ArtifactCollection, ArtifactReviewed, RunArtifact
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
@@ -190,10 +190,12 @@ class FixtureTransport:
             pages=(limit + 99) // 100,
             per_page=min(limit, 100),
         )
-        result.complete = self.complete
-        result.stopped_because = self.stopped_because
-        result.candidates = result.candidates[:limit]
-        return result
+        return replace(
+            result,
+            candidates=result.candidates[:limit],
+            complete=self.complete,
+            stopped_because=self.stopped_because,
+        )
 
     def metadata(
         self,
@@ -500,10 +502,11 @@ def _parser() -> argparse.ArgumentParser:
     render_command = commands.add_parser("render", description="Render stored output unchanged.", epilog=EXIT_CODES)
     render_command.add_argument("artifact", type=Path)
     render_command.add_argument("--json", action="store_true")
-    replay_command = commands.add_parser("replay", description="Re-run under the recorded engine version.", epilog=EXIT_CODES)
+    replay_command = commands.add_parser("replay", description="Recompute stored port responses when recorded engines match.", epilog=EXIT_CODES)
     replay_command.add_argument("artifact", type=Path)
     replay_command.add_argument("--json", action="store_true")
-    reevaluate_command = commands.add_parser("re-evaluate", description="Re-run stored full source under the current engine.", epilog=EXIT_CODES)
+    replay_command.add_argument("--allow-engine-mismatch", action="store_true", help="recompute with current code after reporting changed engines")
+    reevaluate_command = commands.add_parser("re-evaluate", description="Recompute stored port responses with current code.", epilog=EXIT_CODES)
     reevaluate_command.add_argument("artifact", type=Path)
     reevaluate_command.add_argument("--json", action="store_true")
     explain_command = commands.add_parser("explain", description=SCORE_LIMIT, epilog=EXIT_CODES)
@@ -728,17 +731,30 @@ def main(
     err = sys.stderr if stderr is None else stderr
     if args.command in ("render", "replay", "re-evaluate"):
         try:
-            action = {
-                "render": render,
-                "replay": replay,
-                "re-evaluate": re_evaluate,
-            }[args.command]
-            artifact = action(args.artifact.read_bytes())
+            data = args.artifact.read_bytes()
+            if args.command == "replay":
+                mismatches = engine_version_mismatches(render(data))
+                if mismatches and not args.allow_engine_mismatch:
+                    err.write(
+                        "replay not run: "
+                        + "; ".join(str(mismatch) for mismatch in mismatches)
+                        + ". Use --allow-engine-mismatch to recompute with current code.\n"
+                    )
+                    return 1
+                artifact = re_evaluate(data) if mismatches else replay(data)
+                source = (
+                    "recomputed stored responses; engine versions match current code"
+                    if not mismatches
+                    else "recomputed stored responses with changed engines: " + "; ".join(str(mismatch) for mismatch in mismatches)
+                )
+            else:
+                artifact = render(data) if args.command == "render" else re_evaluate(data)
+                source = f"{args.command} artifact"
         except (OSError, ValueError) as error:
             err.write(f"{args.command} failed: {error}\n")
             return 1
         _render_radar(artifact, args.json, out)
-        return _status(artifact, err, f"{args.command} artifact")
+        return _status(artifact, err, source)
     if args.command == "explain":
         try:
             artifact = _render(args.artifact)
