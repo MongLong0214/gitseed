@@ -158,9 +158,10 @@ def test_review_cycle_uses_a_real_pty_and_records_only_authorised_writes(tmp_pat
     assert "Ruled-out: fixture/second | \ub9ac\ubdf0\uc5b4\uac00 \uc774\uc720\ub97c \ub0a8\uae30\uc9c0 \uc54a\uc558\ub2e4" in transcript
     assert transcript.index("fixture/malicious") < transcript.index("[s]tar") < transcript.index("Verified:")
     # And: the decision reached a commit, not only the terminal.
-    assert len(commits) == 1
+    assert len(commits) == 2
     assert "Ruled-out: fixture/second |" in commits[0]
     assert "Verified: fixture/clean" in commits[0]
+    assert "Verified: star fixture/clean succeeded" in commits[1]
 
 
 def test_review_cycle_refuses_an_os_pipe_so_removing_the_tty_guard_fails_this_test(tmp_path: Path) -> None:
@@ -194,17 +195,18 @@ def test_the_committed_decision_message_validates(tmp_path: Path) -> None:
     # Given: a completed real-PTY review cycle containing an approval and a rejection.
     # When: the message actually handed to git is checked by CommitLore.
     _, _, _, commits = _run_under_pty(tmp_path, [b"s\n", b"n\n", b"q\n"])
-    assert len(commits) == 1
-    message_path = tmp_path / "commit-message.txt"
-    message_path.write_text(commits[0])
-    validated = subprocess.run(
-        ["node", str(COMMITLORE_MJS), "validate", "--message-file", str(message_path)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    # Then: the exact message that would have been committed is a valid CommitLore message.
-    assert validated.returncode == 0, validated.stderr
+    assert len(commits) == 2
+    for index, message in enumerate(commits):
+        message_path = tmp_path / f"commit-message-{index}.txt"
+        message_path.write_text(message)
+        validated = subprocess.run(
+            ["node", str(COMMITLORE_MJS), "validate", "--message-file", str(message_path)],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        # Then: every exact message handed to git is a valid CommitLore message.
+        assert validated.returncode == 0, validated.stderr
 
 
 def test_approve_all_asks_once_and_derives_one_approval_per_target(tmp_path: Path) -> None:
@@ -214,10 +216,12 @@ def test_approve_all_asks_once_and_derives_one_approval_per_target(tmp_path: Pat
     # Then: one prompt authorises exactly one star per target.
     assert exit_code == 0
     assert calls == [["star", "fixture/clean"], ["star", "fixture/second"], ["star", "fixture/malicious"]]
-    assert transcript.count("[s]tar [f]ollow [b]oth [n]ext(거부) [q]uit > ") == 1
+    assert transcript[:transcript.index("Verified:")].count(
+        "[s]tar [f]ollow [b]oth [n]ext(거부) [q]uit > "
+    ) == 1
     assert transcript.count("Verified:") == 3
-    # And: one commit carries all three decisions, not one commit per target.
-    assert len(commits) == 1
+    # And: one intent commit carries all decisions, followed by one outcome per action.
+    assert len(commits) == 4
     assert commits[0].count("Verified:") == 3
 
 

@@ -22,6 +22,7 @@ cardinality 위반으로 거부한다. `render_block` 이 실제로 만드는 �
 
 from __future__ import annotations
 
+from .actions import ActionOutcome, OutcomeStatus
 from .approval import Approval, Decision
 
 #: `Ruled-out:` 은 `대안 | 이유` 를 요구한다. 분리자 없는 값은 파싱되지 않는다.
@@ -46,11 +47,21 @@ def approval_trailers(approval: Approval, *, reason: str = "") -> list[str]:
     커밋에 쓰면 그 세 키가 통째로 빠진다는 뜻이고, 그 경우 값을 직접
     붙이는 것은 호출자의 몫이다.
     """
+    audit = (
+        f"prompt={approval.prompt}; answer={approval.answer}; "
+        f"at={approval.at.isoformat()}"
+    )
     if approval.decision is Decision.REJECT:
         why = reason.strip() or "리뷰어가 이유를 남기지 않았다"
-        return [_fold("Ruled-out", f"{approval.target}{_SEPARATOR}{why}")]
+        return [_fold("Ruled-out", f"{approval.target}{_SEPARATOR}{why}; {audit}")]
 
-    lines = [_fold("Verified", f"{approval.target} 에 {approval.decision.value} — 사람이 화면에서 승인했다")]
+    lines = [
+        _fold(
+            "Verified",
+            f"{approval.target} {approval.decision.value} authorized by a human; "
+            f"{audit}; actions pending and may already have run",
+        )
+    ]
     if reason.strip():
         lines.append(_fold("Evidence", reason))
     return lines
@@ -77,4 +88,25 @@ def render_block(approvals: list[Approval], *, reasons: dict[str, str] | None = 
         lines.append(_fold("Blast", "system"))
         lines.append(_fold("Undo", "easy"))
     lines.append(_fold("Provenance", "authored"))
+    return "\n".join(lines) + "\n"
+
+
+def render_outcome(outcome: ActionOutcome) -> str:
+    detail = f"; detail={outcome.detail}" if outcome.detail else ""
+    blast = "local" if outcome.status is OutcomeStatus.NOT_ATTEMPTED else "system"
+    undo = (
+        "costly"
+        if outcome.status in (OutcomeStatus.CALL_FAILED, OutcomeStatus.COMPENSATION_FAILED)
+        else "easy"
+    )
+    lines = [
+        _fold(
+            "Verified",
+            f"{outcome.action} {outcome.approval.target} {outcome.status.value}; "
+            f"approved-at={outcome.approval.at.isoformat()}{detail}",
+        ),
+        _fold("Blast", blast),
+        _fold("Undo", undo),
+        _fold("Provenance", "authored"),
+    ]
     return "\n".join(lines) + "\n"

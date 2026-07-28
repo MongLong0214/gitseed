@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 from .approval import Approval, Decision
@@ -41,6 +42,25 @@ class Performed:
     target: str
     action: str
     approval: Approval
+
+
+class OutcomeStatus(Enum):
+    SUCCEEDED = "succeeded"
+    CALL_FAILED = "call failed; remote result unknown"
+    NOT_ATTEMPTED = "not attempted"
+    COMPENSATED = "compensated"
+    COMPENSATION_FAILED = "compensation failed"
+
+
+@dataclass(frozen=True)  # noqa: SLOTS_OK — Python 3.9 lacks dataclass slots.
+class ActionOutcome:
+    approval: Approval
+    status: OutcomeStatus
+    detail: str = ""
+
+    @property
+    def action(self) -> str:
+        return self.approval.decision.value
 
 
 def _check(approval: Approval, target: str, wanted: Decision) -> None:
