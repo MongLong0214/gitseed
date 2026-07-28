@@ -28,6 +28,10 @@ def scan_text(path: str, text: str) -> list[Signal]: ...
 | `network` | Hard-coded IP, or `.onion`/shortened-URL domain | low |
 | `dep` | Dependency name matches the known typosquatting list | high |
 
+> **Record status (2026-07-28)**: `dep` is ruled out, not implemented — see
+> `docs/prd/PRD-F2-screen.md` and commit trailers. `signals.py` has no `dep` `Signal.kind` and no
+> test names one; this row records the original ticket, not current scope.
+
 **AC (mechanical decision)**
 - [ ] Every `Signal` has `path`, `line`, and `excerpt`. Constructing a signal without a citation
       raises `ValueError`. Test verifies this

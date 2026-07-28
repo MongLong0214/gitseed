@@ -22,3 +22,17 @@ which model is used.**
 - [ ] Tests catch each known malicious-pattern sample (installation script, obfuscation, postinstall)
 - [ ] Every signal has a `path#line` citation. A signal without a citation fails the test
 - [ ] 0 LLM calls — this module does not call a network or model
+
+## Record status (2026-07-28)
+
+**The `known malicious package names in dependency manifests` signal (`dep`): ruled out, not
+implemented.** `gitseed/screen/signals.py` has no `dep` kind and no test names one — this predates
+F11's discipline, not an oversight. F11 established that a security claim resting only on model
+output is never a finding; the same reasoning applies to a `dep` signal built the way this PRD
+describes it (an assertion that a *named dependency* is unsafe). That assertion is either a
+narrow, deterministic lockfile fact — "this exact pinned version matches a known-bad entry in a
+list this tool ships and can cite" — which is not what this requirement describes, or it is an
+inference about a package's trustworthiness, which F11's discipline forbids from becoming a
+finding regardless of whether a model or a hand-written heuristic produced it. See commit
+trailers for the formal `Ruled-out:` record. Reopen if a deterministic formulation — a shipped,
+citable list, not a heuristic — is proposed.
