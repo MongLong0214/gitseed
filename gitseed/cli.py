@@ -10,7 +10,7 @@ import re
 import socket
 import sys
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Final, IO, Mapping, Protocol, Sequence
@@ -18,18 +18,18 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
 from .application import execute, re_evaluate, render, replay
-from .artifact import RunArtifact
+from .artifact import ArtifactReviewed, RunArtifact
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
-from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
+from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .review.actions import ActionOutcome, GitHubWriter, OutcomeStatus, Performed, perform, undo
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
 from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions, record_outcome
 from .review.trailers import render_block
 from .screen.coverage import SkippedFile, SourceCoverage
-from .scoring import ScoreInputs, WEIGHTS
+from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -53,6 +53,12 @@ SOURCE_EXTENSIONS: Final = frozenset(
         ".swift", ".ts", ".tsx", ".vue", ".zsh",
     }
 )
+REVIEW_STATUS_ORDER: Final = {
+    RecommendationStatus.REVIEW: 0,
+    RecommendationStatus.INSUFFICIENT_EVIDENCE: 1,
+    RecommendationStatus.NOT_PRIORITY: 2,
+    RecommendationStatus.BLOCKED: 3,
+}
 # Manifests, lockfiles, and CI definitions: selected by exact filename
 # regardless of extension, because the extension allow-list above has no
 # `.json`/`.yaml`/`.lock`/extensionless entry and never will -- broadening it
@@ -499,35 +505,61 @@ def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
     return "\n".join(lines)
 
 
-def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
+@dataclass(frozen=True)
+class ReviewItem:
+    entry: ArtifactReviewed
+    recommendation: Recommendation
+
+    @property
+    def repo(self) -> str:
+        return self.entry.candidate.repo
+
+
+def rank_review_items(artifact: RunArtifact) -> tuple[ReviewItem, ...]:
     recommendations = {scored.repo: scored.recommendation for scored in artifact.scores}
-    entries = sorted(
-        artifact.result.reviewed,
-        key=lambda entry: (
-            not recommendations[entry.candidate.repo].recommended,
-            -recommendations[entry.candidate.repo].score.value,
-            entry.candidate.repo,
-        ),
+    return tuple(
+        sorted(
+            (
+                ReviewItem(entry, recommendations[entry.candidate.repo])
+                for entry in artifact.result.reviewed
+            ),
+            key=lambda item: (
+                REVIEW_STATUS_ORDER[item.recommendation.status],
+                -item.recommendation.score.value,
+                item.repo,
+            ),
+        )
     )
+
+
+def _review_item_records(items: Sequence[ReviewItem]) -> list[dict[str, str | int | None]]:
     return [
         {
             "rank": index,
-            "repo": entry.candidate.repo,
-            "score": str(recommendations[entry.candidate.repo].score.value),
-            "weight_version": recommendations[entry.candidate.repo].score.version,
-            "coverage": f"{len(recommendations[entry.candidate.repo].score.coverage)}/3",
-            "risk": recommendations[entry.candidate.repo].risk_verdict,
-            "recommendation": "review" if recommendations[entry.candidate.repo].recommended else "not recommended",
-            "severity": entry.severity,
-            "withheld": entry.withheld,
-            "model_coverage": artifact.result.grading_basis.value,
+            "repo": item.repo,
+            "score": str(item.recommendation.score.value),
+            "weight_version": item.recommendation.score.version,
+            "coverage": f"{len(item.recommendation.score.coverage)}/3",
+            "risk": item.recommendation.risk_verdict,
+            "recommendation": item.recommendation.status.value,
+            "severity": item.entry.severity,
+            "withheld": item.entry.withheld,
         }
-        for index, entry in enumerate(entries, start=1)
+        for index, item in enumerate(items, start=1)
     ]
 
 
-def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
-    records = _radar_records(artifact)
+def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
+    return _review_item_records(rank_review_items(artifact))
+
+
+def _render_radar(
+    artifact: RunArtifact,
+    as_json: bool,
+    out: IO[str],
+    items: Sequence[ReviewItem] | None = None,
+) -> None:
+    records = _review_item_records(rank_review_items(artifact) if items is None else items)
     if as_json:
         json.dump(records, out)
         out.write("\n")
@@ -555,10 +587,11 @@ def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> i
 
 def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     trace = next((trace for trace in artifact.repositories if trace.candidate.repo == repo), None)
-    recommendation = next((scored.recommendation for scored in artifact.scores if scored.repo == repo), None)
-    reviewed = next((entry for entry in artifact.result.reviewed if entry.candidate.repo == repo), None)
-    if trace is None or recommendation is None or reviewed is None:
+    item = next((item for item in rank_review_items(artifact) if item.repo == repo), None)
+    if trace is None or item is None:
         return False
+    recommendation = item.recommendation
+    reviewed = item.entry
     score = recommendation.score
     values = None if trace.metadata is None else trace.metadata.score_inputs
     out.write(SCORE_LIMIT + "\n")
@@ -589,7 +622,7 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     out.write(f"security findings: {findings or 'none'}\n")
     out.write(f"unverified security claims: {unverified or 'none'}\n")
     out.write(f"risk: {recommendation.risk_verdict}\n")
-    out.write(f"recommendation: {'review' if recommendation.recommended else 'not recommended'}\n")
+    out.write(f"recommendation: {recommendation.status.value}\n")
     return True
 
 
@@ -601,16 +634,24 @@ def _action_approvals(approval: Approval, owner: str) -> list[Approval]:
     return [replace(approval, decision=Decision.STAR), replace(approval, target=owner, decision=Decision.FOLLOW)]
 
 
-def _approvals(entries: Sequence[Reviewed], approve_all: bool, stdin: IO[str], stdout: IO[str]) -> list[Approval]:
-    owners = {entry.candidate.repo: entry.candidate.owner for entry in entries}
+def _approvals(entries: Sequence[ReviewItem], approve_all: bool, stdin: IO[str], stdout: IO[str]) -> list[Approval]:
+    owners = {item.repo: item.entry.candidate.owner for item in entries}
     if approve_all:
-        collected = collect_bulk_approval(list(owners), _table(entries), stdin=stdin, stdout=stdout)
+        collected = collect_bulk_approval(
+            [item.repo for item in entries],
+            _table_rows(_review_item_records(entries)),
+            stdin=stdin,
+            stdout=stdout,
+        )
     else:
         collected = []
-        for entry in entries:
+        for item in entries:
             approval = collect_approval(
-                entry.candidate.repo,
-                f"{entry.candidate.repo}: score {entry.score if entry.score is not None else '-'}; severity {entry.severity}",
+                item.repo,
+                f"{item.repo}: deterministic score {item.recommendation.score.value}; "
+                f"model score {item.entry.score if item.entry.score is not None else '-'}; "
+                f"risk {item.recommendation.risk_verdict}; "
+                f"recommendation {item.recommendation.status.value}",
                 stdin=stdin,
                 stdout=stdout,
             )
@@ -725,7 +766,8 @@ def main(
         )
         if args.artifact is not None:
             args.artifact.write_bytes(recorded.to_bytes())
-        _render_radar(recorded, args.json, out)
+        review_items = rank_review_items(recorded)
+        _render_radar(recorded, args.json, out, review_items)
         status = _status(recorded, err)
         if status == 2:
             if recorded.result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
@@ -734,9 +776,8 @@ def main(
         if args.dry_run:
             return 0
         active_writer = writer or (fixture if fixture is not None else client)
-        entries = ranked(recorded.result)
         try:
-            approvals = _approvals(entries, args.approve_all, source_in, out)
+            approvals = _approvals(review_items, args.approve_all, source_in, out)
         except NotInteractive as error:
             err.write(f"approval refused: {error}\n")
             return 1

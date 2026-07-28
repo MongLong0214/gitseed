@@ -18,6 +18,7 @@ from gitseed.cli import (
     main,
 )
 from gitseed.evidence import ClaimBasis
+from gitseed.grade.smoke import SmokeResult
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
@@ -85,7 +86,7 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "fixture/clean" in captured.out
     assert "fixture/malicious" in captured.out
     assert "withheld" in captured.out
-    assert "not recommended" in captured.out
+    assert "insufficient-evidence" in captured.out
 
 
 def test_a_failed_model_smoke_gate_labels_the_run_and_artifact(tmp_path, capsys) -> None:
@@ -308,7 +309,7 @@ def test_every_failed_read_reports_zero_coverage_not_a_clean_run(tmp_path, capsy
         "security findings: none\n"
         "unverified security claims: none\n"
         "risk: unknown\n"
-        "recommendation: review\n"
+        "recommendation: insufficient-evidence\n"
     )
     assert "org/unreadable: could not read files (offline)\n" in captured.err
 
@@ -928,7 +929,76 @@ def test_json_includes_every_candidate_and_its_withheld_reason(capsys) -> None:
     records = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert [record["repo"] for record in records] == ["fixture/clean", "fixture/second", "fixture/malicious"]
-    assert records[2]["withheld"]
+    assert next(record for record in records if record["repo"] == "fixture/malicious")["withheld"]
+
+
+def test_radar_and_both_approval_queues_use_the_same_deterministic_order(monkeypatch) -> None:
+    # Given: deterministic metadata ranks a first, while the model ranks b first.
+    first = Candidate("org/a", "org", "", 0, "")
+    second = Candidate("org/b", "org", "", 0, "")
+
+    class Repository:
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[second, first])
+
+        def metadata(self, candidate: Candidate, at) -> RepositoryMetadata:
+            values = ScoreInputs(True, False, False) if candidate is first else ScoreInputs(False, True, False)
+            return RepositoryMetadata(values)
+
+    class Files:
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            return FetchedFiles((("main.py", "x = 1\n"),))
+
+    class Grader:
+        def evaluate(self, digest: str) -> GradeResult:
+            return GradeResult(
+                idea=1 if "org/a" in digest else 9,
+                skill=1 if "org/a" in digest else 9,
+                description="d",
+                model="test",
+                temperature=0.0,
+                prompt_version="v1",
+            )
+
+        def flags_malicious(self, digest: str) -> bool:
+            return False
+
+    class Clock:
+        def now(self):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 28, tzinfo=timezone.utc)
+
+    artifact = execute(
+        RunRequest("example", 2),
+        RunPorts(Repository(), Files(), Grader(), Clock()),
+        model_smoke=SmokeResult(True, "test"),
+    )
+
+    # When: the radar, interactive queue, and bulk queue receive the same review items.
+    items = cli.rank_review_items(artifact)
+    radar = cli._radar_records(artifact)
+    interactive_targets: list[str] = []
+    bulk_targets: list[str] = []
+
+    def stop_after_first(target, summary, **kwargs):
+        interactive_targets.append(target)
+        return None
+
+    def capture_bulk(targets, listing, **kwargs):
+        bulk_targets.extend(targets)
+        return []
+
+    monkeypatch.setattr(cli, "collect_approval", stop_after_first)
+    cli._approvals(items, False, io.StringIO(), io.StringIO())
+    monkeypatch.setattr(cli, "collect_bulk_approval", capture_bulk)
+    cli._approvals(items, True, io.StringIO(), io.StringIO())
+
+    # Then: the old model-score disagreement cannot reorder an approval target.
+    expected = ["org/a", "org/b"]
+    assert [row["repo"] for row in radar] == expected
+    assert interactive_targets == [expected[0]]
+    assert bulk_targets == expected
 
 
 def test_bulk_approval_refuses_non_interactive_stdin(tmp_path, capsys) -> None:
