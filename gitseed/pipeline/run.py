@@ -113,6 +113,7 @@ def run(
     *,
     fetch_files: Callable[[Candidate], FetchedFiles | Sequence[tuple[str, str]]],
     grader: GradeClient | None,
+    on_survivor: Callable[[Candidate], None] | None = None,
 ) -> PipelineResult:
     """Carry `collected` through screening and grading.
 
@@ -136,6 +137,8 @@ def run(
         except FileFetchError as error:
             result.mark_incomplete(error.run_reason or f"{candidate.repo}: could not read files ({error})")
             result.rate_limited = result.rate_limited or error.rate_limited
+            if on_survivor is not None:
+                on_survivor(candidate)
             result.reviewed.append(
                 Reviewed(
                     candidate=candidate,
@@ -148,6 +151,8 @@ def run(
             continue
         except Exception as error:  # noqa: BLE001 — one repository, not the run
             result.mark_incomplete(f"{candidate.repo}: could not read files ({error})")
+            if on_survivor is not None:
+                on_survivor(candidate)
             result.reviewed.append(
                 Reviewed(
                     candidate=candidate,
@@ -178,6 +183,8 @@ def run(
             reason = "no readable source files"
             if skipped:
                 reason += f" ({'; '.join(skipped)})"
+            if on_survivor is not None:
+                on_survivor(candidate)
             result.reviewed.append(
                 Reviewed(
                     candidate=candidate,
@@ -210,6 +217,9 @@ def run(
                 )
             )
             continue
+
+        if on_survivor is not None:
+            on_survivor(candidate)
 
         if grader is None:
             result.reviewed.append(

