@@ -7,6 +7,7 @@ import json
 import os
 import pty
 import select
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Sequence
 import pytest
 
 from gitseed.cli import main
+from gitseed.storage import SQLiteRunStore
 
 
 ROOT = Path(__file__).parent.parent
@@ -255,6 +257,30 @@ def test_broken_store_still_reaches_approval_and_accepts_rejection(tmp_path: Pat
         tmp_path, [b"n\n", b"n\n", b"n\n"], "--store", str(tmp_path)
     )
     # Then: history failure is reported only after the approval gate, never instead of it.
+    assert exit_code == 1
+    assert transcript.count(PROMPT.decode()) >= 3
+    assert calls == []
+
+
+def test_broken_observation_write_still_reaches_approval(tmp_path: Path) -> None:
+    # Given: the artifact store opens, but its new observation insert fails.
+    store_path = tmp_path / "runs.db"
+    with SQLiteRunStore(store_path):
+        pass
+    connection = sqlite3.connect(store_path)
+    connection.execute(
+        "CREATE TRIGGER observations_fail BEFORE INSERT ON repository_observations "
+        "BEGIN SELECT RAISE(ABORT, 'observation write unavailable'); END;"
+    )
+    connection.commit()
+    connection.close()
+
+    # When: the reviewer rejects every proposed GitHub write.
+    exit_code, calls, transcript, _ = _run_under_pty(
+        tmp_path, [b"n\n", b"n\n", b"n\n"], "--store", str(store_path)
+    )
+
+    # Then: the observation failure arrives only after every approval prompt.
     assert exit_code == 1
     assert transcript.count(PROMPT.decode()) >= 3
     assert calls == []

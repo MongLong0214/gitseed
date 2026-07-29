@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import TracebackType
 
@@ -15,6 +16,14 @@ class StoredRun:
     run_id: str
     corrects_run_id: str | None
     artifact: RunArtifact
+
+
+@dataclass(frozen=True)
+class StoredObservation:
+    run_id: str
+    repo: str
+    observed_at: datetime
+    stars: int
 
 
 class SQLiteRunStore:
@@ -49,6 +58,15 @@ class SQLiteRunStore:
                 "VALUES (?, ?, ?)",
                 (run_id, corrects_run_id, artifact.to_bytes()),
             )
+            if artifact.started_at is not None:
+                self._connection.executemany(
+                    "INSERT INTO repository_observations (run_id, repo, observed_at, stars) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        (run_id, candidate.repo, artifact.started_at.isoformat(), candidate.stars)
+                        for candidate in artifact.collection.candidates
+                    ),
+                )
 
     def load(self, run_id: str) -> RunArtifact:
         row = self._connection.execute(
@@ -63,6 +81,19 @@ class SQLiteRunStore:
             StoredRun(str(run_id), corrects_run_id, RunArtifact.from_bytes(bytes(artifact)))
             for run_id, corrects_run_id, artifact in self._connection.execute(
                 "SELECT run_id, corrects_run_id, artifact FROM run_artifacts ORDER BY rowid"
+            )
+        )
+
+    def observations(self) -> tuple[StoredObservation, ...]:
+        return tuple(
+            StoredObservation(
+                str(run_id),
+                str(repo),
+                datetime.fromisoformat(str(observed_at)),
+                int(stars),
+            )
+            for run_id, repo, observed_at, stars in self._connection.execute(
+                "SELECT run_id, repo, observed_at, stars FROM repository_observations ORDER BY observation_id"
             )
         )
 

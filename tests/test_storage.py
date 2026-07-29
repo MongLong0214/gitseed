@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime, timezone
 
 import pytest
@@ -27,8 +27,11 @@ CANDIDATE = Candidate(
 
 
 class Repository:
+    def __init__(self, candidate: Candidate = CANDIDATE) -> None:
+        self.candidate = candidate
+
     def search(self, query: str, limit: int) -> CollectResult:
-        return CollectResult(candidates=[CANDIDATE], pages_fetched=1)
+        return CollectResult(candidates=[self.candidate], pages_fetched=1)
 
     def metadata(self, candidate: Candidate, at: datetime) -> RepositoryMetadata:
         return RepositoryMetadata(ScoreInputs(True, True, True))
@@ -53,14 +56,23 @@ class Model:
 
 
 class Clock:
+    def __init__(self, at: datetime = AT) -> None:
+        self.at = at
+
     def now(self) -> datetime:
-        return AT
+        return self.at
 
 
-def artifact(files: Files | None = None, *, source_mode: str = "digest") -> RunArtifact:
+def artifact(
+    files: Files | None = None,
+    *,
+    source_mode: str = "digest",
+    stars: int = CANDIDATE.stars,
+    at: datetime = AT,
+) -> RunArtifact:
     return execute(
         RunRequest("small tools", 1),
-        RunPorts(Repository(), files or Files(), Model(), Clock()),
+        RunPorts(Repository(replace(CANDIDATE, stars=stars)), files or Files(), Model(), Clock(at)),
         source_mode=source_mode,
     )
 
@@ -127,6 +139,65 @@ def test_partial_artifact_and_correction_history_are_preserved(tmp_path) -> None
     # Then: partial status remains visible and the original was never replaced.
     assert loaded.result.complete is False
     assert loaded.to_bytes() == partial.to_bytes()
+
+
+def test_observations_append_without_moving_first_seen(tmp_path) -> None:
+    # Given: the store records the same repository again with a later count.
+    later = datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
+    with SQLiteRunStore(tmp_path / "runs.db") as store:
+        store.save("first", artifact(stars=4, at=AT))
+        first = store.observations()[0]
+
+        # When: a later run observes more stars.
+        store.save("second", artifact(stars=9, at=later))
+        observations = store.observations()
+
+    # Then: the new raw observation is appended without changing the first one.
+    assert observations == (
+        first,
+        replace(first, run_id="second", observed_at=later, stars=9),
+    )
+
+
+def test_previous_store_schema_opens_and_migrates_additively(tmp_path) -> None:
+    # Given: a store written by schema version 1, before observations existed.
+    path = tmp_path / "runs.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE run_artifacts (
+            run_id TEXT PRIMARY KEY,
+            corrects_run_id TEXT REFERENCES run_artifacts(run_id),
+            artifact BLOB NOT NULL
+        );
+        CREATE TRIGGER run_artifacts_no_update
+        BEFORE UPDATE ON run_artifacts
+        BEGIN
+            SELECT RAISE(ABORT, 'run artifacts are immutable');
+        END;
+        CREATE TRIGGER run_artifacts_no_delete
+        BEFORE DELETE ON run_artifacts
+        BEGIN
+            SELECT RAISE(ABORT, 'run artifacts are immutable');
+        END;
+        PRAGMA user_version = 1;
+        """
+    )
+    connection.execute(
+        "INSERT INTO run_artifacts (run_id, corrects_run_id, artifact) VALUES (?, ?, ?)",
+        ("old-run", None, artifact().to_bytes()),
+    )
+    connection.commit()
+    connection.close()
+
+    # When: the current store opens it.
+    with SQLiteRunStore(path) as store:
+        loaded = store.load("old-run")
+        observations = store.observations()
+
+    # Then: the prior artifact survives and only future saves add observations.
+    assert loaded.to_bytes() == artifact().to_bytes()
+    assert observations == ()
 
 
 def test_re_evaluating_a_full_source_stored_artifact_recomputes_recorded_port_responses(tmp_path) -> None:

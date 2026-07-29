@@ -33,7 +33,7 @@ from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, r
 from .review.trailers import render_block
 from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
-from .storage import SQLiteRunStore
+from .storage import SQLiteRunStore, StoredObservation
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -635,6 +635,16 @@ def _render(path: Path) -> RunArtifact:
     return render(path.read_bytes())
 
 
+def _observation_summary(first: StoredObservation, current: StoredObservation) -> str:
+    first_recorded = f"first recorded observation {first.observed_at.isoformat()}: {first.stars} stars"
+    if current == first:
+        return first_recorded + " (no growth yet)"
+    change = current.stars - first.stars
+    if change == 0:
+        return first_recorded + f"; now {current.stars} stars (unchanged since first recorded observation)"
+    return first_recorded + f"; now {current.stars} stars (changed {change:+d} stars since first recorded observation)"
+
+
 def _history(path: Path, out: IO[str], err: IO[str]) -> int:
     if not path.exists():
         out.write("No stored runs.\n")
@@ -642,12 +652,18 @@ def _history(path: Path, out: IO[str], err: IO[str]) -> int:
     try:
         with SQLiteRunStore(path) as store:
             runs = store.history()
+            observations = store.observations()
     except (OSError, sqlite3.Error, ValueError) as error:
         err.write(f"history failed: {error}\n")
         return 1
     if not runs:
         out.write("No stored runs.\n")
         return 0
+    first_by_repo: dict[str, StoredObservation] = {}
+    observations_by_run: dict[str, list[StoredObservation]] = {}
+    for observation in observations:
+        first_by_repo.setdefault(observation.repo, observation)
+        observations_by_run.setdefault(observation.run_id, []).append(observation)
     for stored in runs:
         decisions = ", ".join(
             f"{item.repo}: {item.recommendation.status.value}"
@@ -655,9 +671,14 @@ def _history(path: Path, out: IO[str], err: IO[str]) -> int:
         ) or "no candidates"
         correction = "" if stored.corrects_run_id is None else f"; corrects {stored.corrects_run_id}"
         state = "complete" if stored.artifact.result.complete else "incomplete"
+        observed = ", ".join(
+            f"{observation.repo}: {_observation_summary(first_by_repo[observation.repo], observation)}"
+            for observation in observations_by_run.get(stored.run_id, [])
+        )
+        observation_suffix = "" if not observed else f"; observed {observed}"
         out.write(
             f"{stored.run_id}: {state}; query {stored.artifact.request.query!r}; "
-            f"decided {decisions}{correction}\n"
+            f"decided {decisions}{correction}{observation_suffix}\n"
         )
     return 0
 
