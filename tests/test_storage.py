@@ -247,23 +247,25 @@ def test_re_evaluating_a_full_source_stored_artifact_recomputes_recorded_port_re
 
 def test_pre_change_artifact_fails_with_a_named_schema_version_mismatch() -> None:
     # Given: bytes recorded by the schema immediately before this change.
-    previous_schema = artifact().to_bytes().replace(b'"schema":7', b'"schema":4')
+    previous_schema = artifact().to_bytes().replace(b'"schema":8', b'"schema":4')
 
     # When/Then: loading refuses to silently reinterpret the old source shape.
-    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 4, current 7"):
+    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 4, current 8"):
         RunArtifact.from_bytes(previous_schema)
 
 
 def test_pre_raw_metadata_artifact_still_parses() -> None:
-    previous = (
-        artifact().to_bytes()
-        .replace(b'"schema":7', b'"schema":5')
-        .replace(b'"pipeline":"pipeline-v2"', b'"pipeline":"pipeline-v1"')
-    )
+    payload = json.loads(artifact().to_bytes())
+    payload["schema"] = 5
+    payload["engines"]["pipeline"] = "pipeline-v1"
+    del payload["engines"]["search"]
+    del payload["ports"]["collection"]["search"]
 
-    restored = RunArtifact.from_bytes(previous)
+    restored = RunArtifact.from_bytes(json.dumps(payload).encode())
 
     assert restored.engines.pipeline == "pipeline-v1"
+    assert restored.engines.search == "unrecorded"
+    assert restored.collection.search is None
     assert restored.repositories[0].metadata is not None
     assert restored.repositories[0].metadata.score_inputs == ScoreInputs(True, True, True)
 

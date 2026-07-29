@@ -243,7 +243,7 @@ def replay(data: bytes) -> RunArtifact:
 def engine_version_mismatches(artifact: RunArtifact) -> tuple[EngineVersionMismatch, ...]:
     return tuple(
         EngineVersionMismatch(engine, recorded, current)
-        for engine in ("pipeline", "screening", "source_selection", "category_packs")
+        for engine in ("pipeline", "screening", "source_selection", "category_packs", "search")
         if (recorded := getattr(artifact.engines, engine)) != (current := getattr(ENGINE_VERSIONS, engine))
     )
 
@@ -288,6 +288,9 @@ class _ReplayRepository:
             recorded.complete,
             recorded.stopped_because,
             recorded.pages_fetched,
+            recorded.total_count,
+            recorded.incomplete_results,
+            recorded.search,
         )
 
     def metadata(

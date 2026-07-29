@@ -24,6 +24,15 @@ class Candidate:
 
 
 @dataclass(frozen=True)
+class SearchParameters:
+    query: str
+    sort: str
+    order: str
+    pages: int
+    per_page: int
+
+
+@dataclass(frozen=True)
 class CollectResult:
     """Candidates, and an honest account of why there are not more.
 
@@ -38,6 +47,7 @@ class CollectResult:
     pages_fetched: int = 0
     total_count: int | None = None
     search_incomplete: bool = False
+    search: SearchParameters | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidates", tuple(self.candidates))
@@ -127,6 +137,8 @@ def collect(
     transport: Transport,
     pages: int = 1,
     per_page: int = 30,
+    sort: str = "updated",
+    order: str = "desc",
     wait: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     now: Callable[[], float] = time.time,
@@ -144,10 +156,17 @@ def collect(
     total_count: int | None = None
     search_incomplete = False
     seen: set[str] = set()
+    search = SearchParameters(query, sort, order, pages, per_page)
 
     for page in range(1, pages + 1):
         url = "https://api.github.com/search/repositories?" + urlencode(
-            {"q": query, "per_page": per_page, "page": page}
+            {
+                "q": query,
+                "sort": sort,
+                "order": order,
+                "per_page": per_page,
+                "page": page,
+            }
         )
         status, headers, body = transport.get(url)
         kind = classify(status, headers)
@@ -161,7 +180,7 @@ def collect(
             if reset_seconds > MAX_WAIT_SECONDS:
                 stopped_because += f"; retry wait capped at {MAX_WAIT_SECONDS:.0f}s"
             if not wait:
-                return CollectResult(tuple(candidates), False, stopped_because, pages_fetched, total_count, search_incomplete)
+                return CollectResult(tuple(candidates), False, stopped_because, pages_fetched, total_count, search_incomplete, search)
             if reset_seconds > MAX_WAIT_SECONDS:
                 warn(
                     f"rate limit wait capped at {MAX_WAIT_SECONDS:.0f}s; "
@@ -172,13 +191,13 @@ def collect(
             sleep(min(reset_seconds, MAX_WAIT_SECONDS))
             status, headers, body = transport.get(url)
             if classify(status, headers) != "ok":
-                return CollectResult(tuple(candidates), False, f"{stopped_because}; still rate limited after waiting", pages_fetched, total_count, search_incomplete)
+                return CollectResult(tuple(candidates), False, f"{stopped_because}; still rate limited after waiting", pages_fetched, total_count, search_incomplete, search)
 
         elif kind == "forbidden":
-            return CollectResult(tuple(candidates), False, "forbidden — a permissions problem, not a budget one", pages_fetched, total_count, search_incomplete)
+            return CollectResult(tuple(candidates), False, "forbidden — a permissions problem, not a budget one", pages_fetched, total_count, search_incomplete, search)
 
         elif kind == "error":
-            return CollectResult(tuple(candidates), False, f"HTTP {status}", pages_fetched, total_count, search_incomplete)
+            return CollectResult(tuple(candidates), False, f"HTTP {status}", pages_fetched, total_count, search_incomplete, search)
 
         items, page_incomplete, page_total_count = _parse_response(body)
         for candidate in items:
@@ -193,4 +212,4 @@ def collect(
         if len(items) < per_page:
             break  # last page
 
-    return CollectResult(tuple(candidates), complete, stopped_because, pages_fetched, total_count, search_incomplete)
+    return CollectResult(tuple(candidates), complete, stopped_because, pages_fetched, total_count, search_incomplete, search)
