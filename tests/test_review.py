@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 import pytest
 
 from gitseed.review.actions import (
+    ActionOutcome,
     ApprovalMismatch,
+    OutcomeStatus,
     Performed,
     follow,
     perform,
@@ -28,7 +30,7 @@ from gitseed.review.approval import (
     collect_approval,
     collect_bulk_approval,
 )
-from gitseed.review.trailers import approval_trailers, render_block
+from gitseed.review.trailers import approval_trailers, render_block, render_outcome
 
 AT = datetime(2026, 7, 27, 9, 0, tzinfo=timezone.utc)
 
@@ -282,6 +284,44 @@ def test_a_block_records_the_prompt_answer_and_approval_time() -> None:
     assert "prompt=display-snapshot-token [s]tar >" in block
     assert "answer=s" in block
     assert f"at={AT.isoformat()}" in block
+
+
+def test_a_star_only_session_records_its_action_as_easy_to_reverse() -> None:
+    approval = approved("octocat/hello", Decision.STAR)
+
+    assert "Undo:" not in render_block([approval])
+    assert "Undo: easy" in render_outcome(ActionOutcome(approval, OutcomeStatus.SUCCEEDED))
+
+
+def test_a_follow_only_session_records_its_irreversible_notification_cost() -> None:
+    approval = approved("octocat", Decision.FOLLOW)
+    outcome = render_outcome(ActionOutcome(approval, OutcomeStatus.SUCCEEDED))
+
+    assert "Undo:" not in render_block([approval])
+    assert "Undo: costly" in outcome
+    assert "Limit: a follow notification may already have been delivered and cannot be recalled" in outcome
+
+
+def test_a_mixed_session_keeps_reversibility_per_action() -> None:
+    star_approval = approved("octocat/hello", Decision.STAR)
+    follow_approval = approved("octocat", Decision.FOLLOW)
+    outcomes = [
+        render_outcome(ActionOutcome(star_approval, OutcomeStatus.SUCCEEDED)),
+        render_outcome(ActionOutcome(follow_approval, OutcomeStatus.SUCCEEDED)),
+    ]
+
+    assert "Undo:" not in render_block([star_approval, follow_approval])
+    assert ["Undo: easy" in outcome for outcome in outcomes] == [True, False]
+    assert ["Undo: costly" in outcome for outcome in outcomes] == [False, True]
+
+
+def test_a_compensated_failure_is_not_recorded_as_a_clean_undo() -> None:
+    outcome = render_outcome(
+        ActionOutcome(approved("octocat/hello", Decision.STAR), OutcomeStatus.COMPENSATED)
+    )
+
+    assert "Undo: permanent" in outcome
+    assert "Limit: compensation cannot recall external effects already emitted" in outcome
 
 
 # --- AC-6: --approve-all -------------------------------------------------------

@@ -198,6 +198,44 @@ def test_subprocess_committer_creates_an_empty_commit_carrying_the_message(tmp_p
     assert "Verified: octocat/hello" in _log(repo)
 
 
+def test_subprocess_committer_creates_a_root_commit_in_a_sha256_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "sha256-repo"
+    repo.mkdir()
+    initialized = subprocess.run(
+        ["git", "init", "-q", "--object-format=sha256"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if initialized.returncode != 0:
+        pytest.skip("installed git does not support SHA-256 repositories")
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "gitseed tests"], cwd=repo, check=True)
+    expected_tree = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input="",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    sha = record_decisions(
+        [approved("octocat/hello", Decision.STAR)],
+        SubprocessGitCommitter(repo),
+    )
+
+    actual_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert sha is not None
+    assert actual_tree == expected_tree
+
+
 def test_subprocess_committer_makes_one_commit_per_call_not_per_approval(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)

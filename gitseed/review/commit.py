@@ -13,8 +13,8 @@ the "nothing to commit" refusal when the index matches `HEAD` exactly — if the
 working tree gitseed was invoked from has anything else staged, a plain
 `commit --allow-empty` commits that too, silently folding unrelated changes
 into the decision record. `SubprocessGitCommitter` instead builds the commit
-from plumbing: `commit-tree` against `HEAD`'s existing tree (or git's
-well-known empty tree, for a repository with no commits yet), then
+from plumbing: `commit-tree` against `HEAD`'s existing tree (or an empty tree
+created in the repository's object format, when it has no commits yet), then
 `update-ref` to move the branch. Neither command touches the index, so
 whatever is staged stays staged and the working tree is not read at all — the
 record is that the review happened, nothing else.
@@ -51,13 +51,6 @@ class GitCommitter(Protocol):
     def commit(self, message: str) -> str: ...
 
 
-#: The SHA of the empty tree. Identical in every git repository — it is not
-#: computed, it is the hash of zero entries — so a brand-new repository with no
-#: commits yet can still be given a root commit whose tree changes nothing.
-_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-_ZERO_OID = "0" * 40
-
-
 class SubprocessGitCommitter:
     """The real adapter: a plumbing-level commit in one working tree, never
     through the index.
@@ -82,8 +75,9 @@ class SubprocessGitCommitter:
         else:
             # No commits yet (or `repo` is not a repository at all — `commit-tree`
             # below reports that clearly rather than this guessing at the reason).
-            args = ["commit-tree", _EMPTY_TREE]
-            expected_head = _ZERO_OID
+            tree = self._require(self._git("mktree", input=b""), "git mktree failed")
+            args = ["commit-tree", tree]
+            expected_head = "0" * len(tree)
         sha = self._require(self._git(*args, input=message.encode()), "git commit-tree failed")
         self._require(self._git("update-ref", "HEAD", sha, expected_head), "git update-ref failed")
         return sha
