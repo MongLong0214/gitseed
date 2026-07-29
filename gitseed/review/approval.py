@@ -15,6 +15,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from hashlib import sha256
 from typing import IO, Callable, Sequence
 
 
@@ -45,6 +46,7 @@ _ANSWERS: dict[str, Decision] = {
 
 #: 대화를 끝내는 입력. 결정이 아니라 중단이므로 `Decision` 에 넣지 않는다.
 QUIT = "q"
+BULK_LISTING_ROW_LIMIT = 20
 
 
 class NotInteractive(RuntimeError):
@@ -58,12 +60,12 @@ class NotInteractive(RuntimeError):
 
 @dataclass(frozen=True)
 class Approval:
-    """한 번의 사람 결정. 자기가 무엇으로부터 만들어졌는지를 들고 있다.
+    """One human decision with the evidence from which it was made.
 
-    `prompt`/`answer` 를 보존하는 이유: 이 값이 트레일러로 커밋에 남고, 나중에
-    "정말 사람이 봤는가" 를 묻는 사람은 결정 자체가 아니라 무엇을 보고
-    결정했는지를 확인해야 한다. `at` 이 필수인 것도 같은 이유다 — 시각 없는
-    승인은 감사할 수 없다.
+    `prompt` and `answer` are committed as trailers so a later reviewer can
+    judge what the person saw, not only the resulting decision. Large bulk
+    prompts retain the first rows plus an explicit omission count and digest.
+    `at` is required for the same reason: an undated approval is not auditable.
     """
 
     target: str
@@ -71,6 +73,7 @@ class Approval:
     prompt: str
     answer: str
     at: datetime
+    bulk: bool = False
 
     def __post_init__(self) -> None:
         if not self.target:
@@ -93,11 +96,9 @@ def collect_approval(
     stdout: IO[str] | None = None,
     now: Callable[[], datetime] = _now,
 ) -> Approval | None:
-    """항목 하나를 보여주고 결정을 받는다. `q` 면 `None`(중단).
+    """Show one item and collect a decision, returning `None` for `q`.
 
-    `stdin.isatty()` 가 거짓이면 :class:`NotInteractive`. 테스트는 tty 를 흉내
-    내는 가짜 스트림을 주입한다 — 검사를 우회하는 플래그를 두지 않는 이유는,
-    그 플래그가 존재하는 순간 CI 에서 켜지고 그게 곧 자동화이기 때문이다.
+    A non-TTY stdin raises :class:`NotInteractive`.
     """
     stream_in = sys.stdin if stdin is None else stdin
     stream_out = sys.stdout if stdout is None else stdout
@@ -107,7 +108,8 @@ def collect_approval(
             "승인을 물을 터미널이 없다. gitseed 는 사람이 보는 화면에서만 외부 행동을 승인한다."
         )
 
-    prompt = f"{summary}\n  [s]tar [f]ollow [b]oth [n]ext(거부) [q]uit > "
+    suffix = "  [s]tar [f]ollow [b]oth [n]ext(거부) [q]uit > "
+    prompt = f"{summary}\n{suffix}"
     while True:
         stream_out.write(prompt)
         stream_out.flush()
@@ -138,26 +140,23 @@ def collect_bulk_approval(
     stdout: IO[str] | None = None,
     now: Callable[[], datetime] = _now,
 ) -> list[Approval]:
-    """`--approve-all`: 전체를 보여주고 **1회** 결정을 받아 항목 수만큼 파생한다.
+    """Show the complete bulk listing once and derive one approval per target.
 
-    파생된 `Approval` 들은 모두 같은 `prompt`(전체 목록)와 같은 `answer` 를
-    들고 있다. 감사하는 사람이 "이건 건건이 본 게 아니라 일괄 승인이다" 를
-    트레일러만 보고 판별할 수 있어야 하기 때문이다.
-
-    거부(`n`)와 중단(`q`)은 다르다. 거부는 전건 거부로 기록되고, 중단은 빈
-    목록을 남긴다 — 아무 판단도 하지 않은 것과 전부 아니라고 판단한 것은
-    다른 사실이다.
+    Every derived approval carries the same bounded listing snapshot and answer.
+    Rejection (`n`) records every target; quitting (`q`) records none.
     """
     if not targets:
         return []
 
+    bulk_notice = f"위 {len(targets)}건 전체에 대한 결정. 건별로 다시 묻지 않는다."
+    bounded_listing = _bounded_listing(listing)
     stream_out = sys.stdout if stdout is None else stdout
-    stream_out.write(listing)
-    stream_out.write(f"\n위 {len(targets)}건 전체에 대한 결정. 건별로 다시 묻지 않는다.\n")
+    if bounded_listing != listing:
+        stream_out.write(f"{listing}\n{bulk_notice}\n")
 
     approval = collect_approval(
         f"<{len(targets)} targets>",
-        f"일괄 승인: {len(targets)}건",
+        f"{bounded_listing}\n{bulk_notice}\n일괄 승인: {len(targets)}건",
         stdin=stdin,
         stdout=stream_out,
         now=now,
@@ -172,6 +171,19 @@ def collect_bulk_approval(
             prompt=approval.prompt,
             answer=approval.answer,
             at=approval.at,
+            bulk=True,
         )
         for target in targets
     ]
+
+
+def _bounded_listing(listing: str) -> str:
+    lines = listing.splitlines()
+    kept = BULK_LISTING_ROW_LIMIT + 1
+    if len(lines) <= kept:
+        return listing
+    omitted = len(lines) - kept
+    digest = sha256(listing.encode()).hexdigest()
+    return "\n".join(
+        [*lines[:kept], f"[bulk listing truncated: {omitted} rows omitted; sha256={digest}]"]
+    )

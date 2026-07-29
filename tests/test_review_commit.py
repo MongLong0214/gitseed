@@ -13,6 +13,7 @@ without an `Approval` at all.
 
 from __future__ import annotations
 
+import io
 import inspect
 import subprocess
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from gitseed.review.approval import Approval, Decision
+from gitseed.review.approval import Approval, Decision, collect_bulk_approval
 from gitseed.review.commit import CommitFailed, SubprocessGitCommitter, record_decisions
 from gitseed.review.trailers import render_block
 
@@ -46,6 +47,11 @@ class FailingCommitter:
         raise CommitFailed("git refused")
 
 
+class Tty(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 class RacingCommitter(SubprocessGitCommitter):
     def __init__(self, repo: Path) -> None:
         super().__init__(repo)
@@ -55,7 +61,7 @@ class RacingCommitter(SubprocessGitCommitter):
         result = super()._git(*args, input=input)
         if args[0] == "commit-tree" and result.returncode == 0 and not self.competing_sha:
             competing = subprocess.run(
-                ["git", "-C", str(self.repo), "commit-tree", args[1]],
+                ["git", "-C", str(self.repo), "commit-tree", *args[1:]],
                 input=b"competing commit\n",
                 check=True,
                 capture_output=True,
@@ -137,6 +143,25 @@ def test_an_approval_session_commits_once_for_every_decision_together() -> None:
     assert message.count("Ruled-out:") == 1
 
 
+def test_a_large_bulk_listing_is_recorded_once_not_once_per_target() -> None:
+    targets = [f"org/repo-{index:04d}" for index in range(1000)]
+    listing = "\n".join(["rank  repo", *(f"{index + 1}  {target}" for index, target in enumerate(targets))])
+    approvals = collect_bulk_approval(
+        targets,
+        listing,
+        stdin=Tty("s\n"),
+        stdout=io.StringIO(),
+        now=lambda: AT,
+    )
+    committer = RecordingCommitter()
+
+    record_decisions(approvals, committer)
+
+    assert len(committer.messages) == 1
+    assert committer.messages[0].count("Verified:") == 1
+    assert "980 rows omitted" in committer.messages[0]
+
+
 def test_the_commit_failure_from_the_committer_propagates() -> None:
     with pytest.raises(CommitFailed):
         record_decisions([approved("a", Decision.STAR)], FailingCommitter())
@@ -211,9 +236,18 @@ def test_subprocess_committer_fails_loudly_outside_a_git_repository(tmp_path: Pa
         committer.commit("gitseed review: 1 approved, 0 rejected\n\nVerified: a\n")
 
 
-def test_subprocess_committer_does_not_overwrite_a_concurrent_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("existing_head", [False, True])
+def test_subprocess_committer_does_not_overwrite_a_concurrent_commit(
+    tmp_path: Path, existing_head: bool
+) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
+    if existing_head:
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "initial"],
+            check=True,
+            capture_output=True,
+        )
     committer = RacingCommitter(repo)
 
     with pytest.raises(CommitFailed):
