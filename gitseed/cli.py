@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
 from .application import engine_version_mismatches, execute, re_evaluate, render, replay
 from .artifact import ArtifactCollection, ArtifactReviewed, RunArtifact
+from .category import CATEGORY_PACKS, CategoryMatch
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
@@ -495,6 +496,8 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("radar", aliases=["run"], description=SCORE_LIMIT, epilog=EXIT_CODES)
     command.add_argument("--query", help="GitHub repository search query")
+    command.add_argument("--category", action="append", choices=tuple(pack.name for pack in CATEGORY_PACKS), default=[])
+    command.add_argument("--list-categories", action="store_true", help="list built-in category packs and exit")
     command.add_argument("--render", type=Path, help="render recorded output without re-evaluating it")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
     command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
@@ -547,7 +550,7 @@ def _table(entries: Sequence[Reviewed]) -> str:
 def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
     columns = ["rank", "repo", "score"]
     if rows and "weight_version" in rows[0]:
-        columns.extend(["weight_version", "coverage", "risk", "recommendation"])
+        columns.extend(["weight_version", "coverage", "risk", "recommendation", "category"])
     else:
         columns.append("severity")
     if any(row["withheld"] for row in rows):
@@ -563,6 +566,7 @@ def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
 class ReviewItem:
     entry: ArtifactReviewed
     recommendation: Recommendation
+    categories: tuple[CategoryMatch, ...]
 
     @property
     def repo(self) -> str:
@@ -571,10 +575,11 @@ class ReviewItem:
 
 def rank_review_items(artifact: RunArtifact) -> tuple[ReviewItem, ...]:
     recommendations = {scored.repo: scored.recommendation for scored in artifact.scores}
+    categories = {trace.candidate.repo: trace.categories for trace in artifact.repositories}
     return tuple(
         sorted(
             (
-                ReviewItem(entry, recommendations[entry.candidate.repo])
+                ReviewItem(entry, recommendations[entry.candidate.repo], categories[entry.candidate.repo])
                 for entry in artifact.result.reviewed
             ),
             key=lambda item: (
@@ -596,11 +601,21 @@ def _review_item_records(items: Sequence[ReviewItem]) -> list[dict[str, str | in
             "coverage": f"{len(item.recommendation.score.coverage)}/3",
             "risk": item.recommendation.risk_verdict,
             "recommendation": item.recommendation.status.value,
+            "category": _category_label(item.categories),
             "severity": item.entry.severity,
             "withheld": item.entry.withheld,
         }
         for index, item in enumerate(items, start=1)
     ]
+
+
+def _category_label(categories: tuple[CategoryMatch, ...]) -> str:
+    if not categories:
+        return "not recorded"
+    return ", ".join(
+        match.category or f"{match.pack.name}: uncategorized ({match.basis.value})"
+        for match in categories
+    )
 
 
 def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
@@ -767,6 +782,7 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     model_coverage = artifact.result.grading_basis.value
     suffix = " (deterministic-only)" if model_coverage == "absent" else ""
     out.write(f"model coverage: {model_coverage}{suffix}\n")
+    out.write(f"category: {_category_label(trace.categories)}\n")
     findings = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.findings)
     unverified = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.unverified)
     out.write(f"security findings: {findings or 'none'}\n")
@@ -829,6 +845,11 @@ def main(
         return 1 if error.code else 0
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    if args.command in ("radar", "run") and args.list_categories:
+        for pack in CATEGORY_PACKS:
+            requirements = ", ".join(f"{item.evidence}={item.value}" for item in pack.evidence)
+            out.write(f"{pack.name} {pack.version}: {requirements}\n")
+        return 0
     if args.command in ("render", "replay", "re-evaluate"):
         try:
             data = args.artifact.read_bytes()
@@ -923,7 +944,7 @@ def main(
         repository = fixture if fixture is not None else GitHubRepository(active_transport)
         collected = repository.search(args.query, args.limit)
         recorded = execute(
-            RunRequest(args.query, args.limit),
+            RunRequest(args.query, args.limit, tuple(args.category)),
             RunPorts(
                 CollectedRepository(repository, collected),
                 CallableFileReader(active_fetch_files),

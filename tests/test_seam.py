@@ -295,4 +295,38 @@ def test_the_run_seam_has_no_external_writer_port() -> None:
         "files",
         "model",
         "clock",
+        "evidence",
     ]
+
+
+def test_run_records_categories_and_can_rederive_them_from_its_artifact() -> None:
+    class AgentFiles(Files):
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            return FetchedFiles(
+                (("AGENTS.md", "Repository instructions."), ("agent.py", "planner = Agent(tool=search)"))
+            )
+
+    artifact = execute(RunRequest("small tools", 1, ("coding-agents",)), ports(AgentFiles()))
+    stored = render(artifact.to_bytes())
+    trace = stored.repositories[0]
+
+    assert trace.categories[0].category == "coding-agents"
+    assert stored.rederive_categories(CANDIDATE.repo) == trace.categories
+
+
+def test_broken_category_reader_does_not_change_the_approval_inputs() -> None:
+    class BrokenEvidence:
+        evidence_names = frozenset({"files", "manifest_entries", "dependencies", "source"})
+
+        def read_evidence(self, candidate, files, metadata):
+            raise RuntimeError("category reader deliberately unavailable")
+
+    artifact = execute(
+        RunRequest("small tools", 1, ("coding-agents",)),
+        RunPorts(Repository(), Files(), Model(), Clock(), BrokenEvidence()),
+        model_smoke=SmokeResult(True, "fixture"),
+    )
+
+    assert artifact.scores[0].recommendation.status.value == "review"
+    assert artifact.repositories[0].categories[0].basis is ClaimBasis.ABSENT
+    assert any(failure.port == "category" for failure in artifact.failures)
