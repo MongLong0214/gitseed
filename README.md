@@ -60,37 +60,27 @@ python3 -m gitseed re-evaluate run.json
 
 Exit codes: `0` complete; `1` invalid invocation or operational failure; `2` incomplete run.
 
-## Known limitations (as of the 2026-07-28 review)
+## Known limitations
 
-A static review of `dev` at `d0e1ecd` found gaps between what the security-screening and
-recommendation machinery is built to do and what a live run actually does. None of these are
-addressed yet; each is tracked as its own issue rather than fixed silently.
+- **Non-priority source-file selection still follows raw git-tree order, truncated at the
+  20-file scan cap.** `GitHubClient.fetch_files` (`gitseed/cli.py`) selects manifests,
+  lockfiles, and CI workflow files (`PRIORITY_FILENAMES`, matched by `_is_priority_path`)
+  before the count cap is applied at all, so those specific files can no longer be hidden by
+  their position in the tree. Every other eligible file is still taken in the order the GitHub
+  tree API returns it: a repository can still be structured so that a non-manifest file past
+  the 20th eligible position is never scanned. This is no longer silent, though — when the cap
+  or a fetch error leaves eligible files unscanned, `risk_of` (`gitseed/screen/verdict.py`)
+  reports `none-found-in-scanned-files` instead of a bare `none`, `Recommendation.status`
+  (`gitseed/scoring.py`) treats that as `insufficient-evidence` rather than a positive
+  recommendation, and `explain` prints the exact scanned/eligible/discovered file counts.
+  ([issue #49](https://github.com/MongLong0214/gitseed/issues/49) — commit
+  [`02d96b9`](https://github.com/MongLong0214/gitseed/commit/02d96b985945a67048432b1cb1a1dea1077a74d9)
+  exempted priority filenames from the tree-order cap and deliberately left general-file
+  ordering unchanged; see that commit's `Ruled-out` trailer)
 
-- **The live scanner does not read `package.json`, or any other manifest, lockfile, or
-  workflow file.** `SOURCE_EXTENSIONS` in `gitseed/cli.py` is an allow-list of source-code
-  extensions only — no `.json` entry — so a live run's file selector never hands
-  `package.json` to the scanner. The `postinstall`/`preinstall` detection rule in
-  `gitseed/screen/signals.py` is implemented and passes its unit tests, but those tests read a
-  fixture directory directly, bypassing the live selector; against a real GitHub repository,
-  a malicious `postinstall` hook in `package.json` is currently invisible to gitseed.
-  ([issue #45](https://github.com/MongLong0214/gitseed/issues/45))
-- **`recommendation: review` means "not blocked by a high-risk deterministic finding," not
-  "safe" or "worth reviewing."** A candidate with zero readable files, zero score coverage,
-  and an `unknown` risk verdict currently renders identically to one that was fully scanned
-  and came back clean. ([issue #46](https://github.com/MongLong0214/gitseed/issues/46))
-- **Files skipped by the 20-file/500KB screening caps do not affect severity or
-  recommendation**, and selection currently follows raw file-tree order — a repository can be
-  structured so a malicious file past the 20th position is never scanned, with no signal that
-  this happened. ([issue #48](https://github.com/MongLong0214/gitseed/issues/48),
-  [issue #49](https://github.com/MongLong0214/gitseed/issues/49))
-- **The radar table, `--json`/`explain` output, and the interactive approval queue currently
-  rank candidates by two different scores** — the table by the deterministic metadata score,
-  the approval prompt by the local model's `idea + skill` grade — so the order a person
-  reviews on screen is not guaranteed to be the order they are asked to approve.
-  ([issue #36](https://github.com/MongLong0214/gitseed/issues/36))
-
-None of this is "safe": read it as "no high-risk pattern was found in the files that were
-actually scanned," not as a security guarantee about the repository as a whole.
+This is not a security guarantee about the repository as a whole: it is "no high-risk pattern
+was found in the files this run actually scanned," and `explain`'s file-coverage line says
+whether that was every eligible file or a capped subset of them.
 
 ## What it does not do yet
 
