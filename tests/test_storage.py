@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import fields, replace
 from datetime import datetime, timezone
@@ -27,14 +28,19 @@ CANDIDATE = Candidate(
 
 
 class Repository:
-    def __init__(self, candidate: Candidate = CANDIDATE) -> None:
+    def __init__(
+        self,
+        candidate: Candidate = CANDIDATE,
+        score_inputs: ScoreInputs | None = None,
+    ) -> None:
         self.candidate = candidate
+        self.score_inputs = score_inputs or ScoreInputs(True, True, True)
 
     def search(self, query: str, limit: int) -> CollectResult:
         return CollectResult(candidates=[self.candidate], pages_fetched=1)
 
     def metadata(self, candidate: Candidate, at: datetime) -> RepositoryMetadata:
-        return RepositoryMetadata(ScoreInputs(True, True, True))
+        return RepositoryMetadata(self.score_inputs)
 
 
 class Files:
@@ -120,6 +126,29 @@ def test_stored_artifact_round_trips_with_score_provenance(tmp_path) -> None:
     assert rendered.to_bytes() == direct_render.to_bytes() == recorded.to_bytes()
     assert loaded.scores[0].score.version == recorded.scores[0].score.version
     assert loaded.scores[0].score.coverage == frozenset(ALL_FEATURES)
+
+
+def test_raw_metadata_reaches_the_versioned_artifact_without_rounding() -> None:
+    inputs = ScoreInputs.observed(137, 109, {"spdx_id": "MIT", "name": "MIT License"})
+    recorded = execute(
+        RunRequest("small tools", 1),
+        RunPorts(Repository(score_inputs=inputs), Files(), Model(), Clock()),
+    )
+
+    payload = json.loads(recorded.to_bytes())
+    fragment = payload["ports"]["repositories"][0]["metadata"]["score_inputs"]
+    restored = RunArtifact.from_bytes(recorded.to_bytes()).repositories[0].metadata
+
+    assert fragment == {
+        "commit_count_30d": 137,
+        "commit_count_basis": "deterministic",
+        "contributor_count": 109,
+        "contributor_count_basis": "deterministic",
+        "license": {"name": "MIT License", "spdx_id": "MIT"},
+        "license_basis": "deterministic",
+    }
+    assert restored is not None
+    assert restored.score_inputs == inputs
 
 
 def test_partial_artifact_and_correction_history_are_preserved(tmp_path) -> None:
@@ -218,11 +247,25 @@ def test_re_evaluating_a_full_source_stored_artifact_recomputes_recorded_port_re
 
 def test_pre_change_artifact_fails_with_a_named_schema_version_mismatch() -> None:
     # Given: bytes recorded by the schema immediately before this change.
-    previous_schema = artifact().to_bytes().replace(b'"schema":5', b'"schema":4')
+    previous_schema = artifact().to_bytes().replace(b'"schema":6', b'"schema":4')
 
     # When/Then: loading refuses to silently reinterpret the old source shape.
-    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 4, current 5"):
+    with pytest.raises(ArtifactVersionError, match="artifact schema version mismatch: recorded 4, current 6"):
         RunArtifact.from_bytes(previous_schema)
+
+
+def test_pre_raw_metadata_artifact_still_parses() -> None:
+    previous = (
+        artifact().to_bytes()
+        .replace(b'"schema":6', b'"schema":5')
+        .replace(b'"pipeline":"pipeline-v2"', b'"pipeline":"pipeline-v1"')
+    )
+
+    restored = RunArtifact.from_bytes(previous)
+
+    assert restored.engines.pipeline == "pipeline-v1"
+    assert restored.repositories[0].metadata is not None
+    assert restored.repositories[0].metadata.score_inputs == ScoreInputs(True, True, True)
 
 
 def test_stored_replay_has_no_external_writer_port() -> None:

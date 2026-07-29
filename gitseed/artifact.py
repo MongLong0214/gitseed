@@ -18,7 +18,7 @@ from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
 from .screen.verdict import findings, unverified
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SourceMode = Literal["metadata-only", "digest", "full-source"]
 
 
@@ -26,7 +26,7 @@ SourceMode = Literal["metadata-only", "digest", "full-source"]
 class EngineVersions:
     """Semantic identifiers bumped when an engine's observable result changes."""
 
-    pipeline: str = "pipeline-v1"
+    pipeline: str = "pipeline-v2"
     screening: str = "screening-v1"
     source_selection: str = "source-selection-v1"
     category_packs: str = "category-packs-v1"
@@ -278,7 +278,7 @@ class RunArtifact:
     @classmethod
     def from_bytes(cls, data: bytes) -> RunArtifact:
         payload = json.loads(data)
-        if payload.get("schema") != SCHEMA_VERSION:
+        if payload.get("schema") not in (5, SCHEMA_VERSION):
             raise ArtifactVersionError(payload.get("schema"))
         ports = payload["ports"]
         output = payload["output"]
@@ -324,7 +324,7 @@ def _metadata_from_dict(payload: dict | None) -> RepositoryMetadata | None:
     if payload is None:
         return None
     return RepositoryMetadata(
-        ScoreInputs(**payload["score_inputs"]),
+        ScoreInputs.from_dict(payload["score_inputs"]),
         tuple(payload["incomplete_because"]),
     )
 
@@ -369,7 +369,12 @@ def _smoke_from_dict(payload: dict) -> ArtifactSmokeResult:
 def _trace_to_dict(trace: RepositoryTrace):
     return {
         "candidate": asdict(trace.candidate),
-        "metadata": None if trace.metadata is None else asdict(trace.metadata),
+        "metadata": None
+        if trace.metadata is None
+        else {
+            "score_inputs": trace.metadata.score_inputs.to_dict(),
+            "incomplete_because": list(trace.metadata.incomplete_because),
+        },
         "files": None if trace.files is None else asdict(trace.files),
         "grade": None if trace.grade is None else asdict(trace.grade),
         "failures": [asdict(failure) for failure in trace.failures],

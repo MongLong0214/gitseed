@@ -1288,6 +1288,54 @@ def test_radar_and_both_approval_queues_use_the_same_deterministic_order(monkeyp
     assert bulk_targets == expected
 
 
+def test_approval_collection_survives_broken_metadata_collection() -> None:
+    candidate = Candidate("org/repo", "org", "", 0, "")
+
+    class Repository:
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[candidate])
+
+        def metadata(self, candidate: Candidate, at) -> RepositoryMetadata:
+            raise OSError("metadata deliberately unavailable")
+
+    class Files:
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            return FetchedFiles((("main.py", "x = 1\n"),))
+
+    class Grader:
+        def evaluate(self, digest: str) -> GradeResult:
+            return GradeResult(8, 7, "d", "test", 0.0, "v1")
+
+        def flags_malicious(self, digest: str) -> bool:
+            return False
+
+    class Clock:
+        def now(self):
+            from datetime import datetime, timezone
+
+            return datetime(2026, 7, 28, tzinfo=timezone.utc)
+
+    class Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    artifact = execute(
+        RunRequest("example", 1),
+        RunPorts(Repository(), Files(), Grader(), Clock()),
+        model_smoke=SmokeResult(True, "test"),
+    )
+
+    approvals = cli._approvals(
+        cli.rank_review_items(artifact),
+        False,
+        Tty("n\n"),
+        io.StringIO(),
+    )
+
+    assert artifact.result.complete is False
+    assert [approval.target for approval in approvals] == ["org/repo"]
+
+
 def test_bulk_approval_refuses_non_interactive_stdin(tmp_path, capsys) -> None:
     # Given: a complete offline run but no terminal for a human decision.
     _write_fixture(tmp_path)
