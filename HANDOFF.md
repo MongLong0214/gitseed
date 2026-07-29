@@ -22,17 +22,27 @@ touching `cli.py`, `application.py` or anything on the run path.
 `dev` is the default branch; PRs required. Baseline as of this writing:
 
 ```
-305 tests passing
-4 open issues
+310 tests passing
+1 open issue, deferred to backlog
 ```
 
 Run `python3 -m pytest -q` and `gh issue list --state open` rather than trusting
 those numbers.
 
-All four remaining issues are product surface, not defects. The correctness and
-safety work is done: the approval gate, append-only storage, ref atomicity,
-honest reversibility grades, raw metadata retention and category wiring all
-landed and are each verified by breaking them.
+The single remaining issue is #66, a share card, deferred to backlog while work
+concentrates on CommitLore. Everything else is closed. The correctness and safety
+work is done and each piece was verified by breaking it: the approval gate,
+append-only storage, ref atomicity, honest reversibility grades, raw metadata
+retention, category wiring, evidence-producer validation, and search ordering
+recorded as a policy rather than a claim.
+
+Two ADRs carry decisions a later maintainer will want to overturn without knowing
+why they were made. ADR-0012 says this project must not emit an undervaluation,
+momentum, growth or breakout score, because it has observed attention for
+individual repositories and no baseline for what attention to expect. ADR-0013
+says search ordering is a collection preference, not evidence about what it
+surfaces. Both state their own falsification conditions; overturn them with
+evidence.
 
 ## The approval gate
 
@@ -91,21 +101,22 @@ activity data would make every recommendation wrong in the same direction.
 The ADR states its own falsification condition. Overturn it with evidence, not
 preference.
 
-## Open issues, grouped
+## Open issues
 
-**Evidence provenance — #61.** `COLLECTOR_EVIDENCE` is a free-floating string
-allowlist. The repository already has `ClaimBasis` in `evidence.py` for this shape
-of problem; reuse it rather than inventing a parallel notion.
+**#66 — share card, deferred to backlog.** The issue asks for a surface to share a
+"gitseed found this early" claim, and ADR-0012 established this project cannot
+make an early-discovery claim from today's data. The resolution recorded on the
+issue: what a run can honestly share is what it observed and when — this
+repository had this many stars at this timestamp, gitseed surfaced it, here is the
+query. That becomes evidence of early discovery only later, when someone compares
+it against what the repository became, so the card's job is to make that
+comparison possible rather than to pre-empt it. Build it for the verifier: the
+query (#67 records it), the timestamp, raw counts (#64 keeps them), engine
+versions, run id. A card that cannot be checked is marketing.
 
-**Product surface — #66, #67, #69.** Share card / digest output, search result
-ordering, README hero framing. Genuinely P2. #69 notes the README leads with the
-internal safety arc rather than what a reader gets — worth reading alongside what
-CommitLore's README does now, which leads with a measured comparison and puts the
-install command above the evidence.
-
-**#63 stays open as the tracking issue for the undervaluation question**, now
-answered by ADR-0012 for the present data. Reopen the design when repositories
-have accumulated repeat observations.
+If it feels weak without a discovery claim, that weakness is the honest state of
+the product, and #65's accumulating observations are what will fix it — no
+repository has two data points yet.
 
 ## Conventions
 
