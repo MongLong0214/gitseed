@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from .category import absent_evidence, classify_all, selected_packs
 from .artifact import (
     ENGINE_VERSIONS,
     ArtifactCollection,
@@ -40,6 +41,7 @@ def execute(
     model_smoke: SmokeResult | None = None,
     source_mode: SourceMode = "digest",
 ) -> RunArtifact:
+    packs = selected_packs(request.categories)
     failures: list[PortFailure] = []
     trace_failures: dict[str, list[PortFailure]] = {}
     metadata: dict[str, RepositoryMetadata | None] = {}
@@ -146,6 +148,22 @@ def execute(
         )
 
     reviewed_by_repo = {reviewed.candidate.repo: reviewed for reviewed in result.reviewed}
+    category_evidence = {}
+    categories = {}
+    for candidate in collected.candidates:
+        try:
+            evidence = (
+                absent_evidence()
+                if candidate.repo not in files
+                else ports.evidence.read_evidence(candidate, files[candidate.repo], metadata[candidate.repo])
+            )
+        except Exception as error:  # noqa: BROAD_EXCEPT_OK -- category evidence must not reach approval
+            failure = PortFailure("category", "read", candidate.repo, str(error))
+            failures.append(failure)
+            trace_failures[candidate.repo].append(failure)
+            evidence = absent_evidence()
+        category_evidence[candidate.repo] = evidence
+        categories[candidate.repo] = classify_all(packs, evidence)
     repositories = tuple(
         RepositoryTrace(
             candidate,
@@ -159,6 +177,8 @@ def execute(
             ),
             grades.get(candidate.repo),
             tuple(trace_failures[candidate.repo]),
+            category_evidence[candidate.repo],
+            categories[candidate.repo],
         )
         for candidate in collected.candidates
     )
@@ -173,6 +193,7 @@ def execute(
         failures=tuple(failures),
         engines=ENGINE_VERSIONS,
         source_mode=source_mode,
+        category_packs=packs,
     )
 
 

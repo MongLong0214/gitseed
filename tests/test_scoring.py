@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -19,6 +20,7 @@ from gitseed.scoring import (
 )
 from gitseed.evidence import ClaimBasis
 from gitseed.screen.signals import HIGH, LOW
+from gitseed.screen.verdict import NONE, NONE_FOUND_IN_SCANNED_FILES
 
 
 def test_m0_contributions_are_the_weight_set() -> None:
@@ -117,6 +119,33 @@ def test_recommendations_only_shrink_from_the_old_predicate() -> None:
     # Then: no candidate becomes recommended as a side effect of the fix.
     assert new_recommended == {"good"}
     assert new_recommended <= old_recommended
+
+
+def test_all_45_score_coverage_and_risk_verdict_combinations_stay_invariant() -> None:
+    inputs = (
+        ScoreInputs(True, True, True),
+        ScoreInputs(True, False, False),
+        ScoreInputs(False, False, False),
+        ScoreInputs(True, True, None),
+        ScoreInputs(True, False, None),
+        ScoreInputs(False, True, None),
+        ScoreInputs(False, False, None),
+        ScoreInputs(True, None, None),
+        ScoreInputs(None, None, None),
+    )
+    risks = (LOW, NONE, "unknown", NONE_FOUND_IN_SCANNED_FILES, HIGH)
+    recommendations = [Recommendation(score(values), risk) for values in inputs for risk in risks]
+
+    assert len(recommendations) == 45
+    assert sum(item.risk_verdict != HIGH for item in recommendations) == 36
+    assert Counter(item.status for item in recommendations) == Counter(
+        {
+            RecommendationStatus.REVIEW: 4,
+            RecommendationStatus.NOT_PRIORITY: 2,
+            RecommendationStatus.INSUFFICIENT_EVIDENCE: 30,
+            RecommendationStatus.BLOCKED: 9,
+        }
+    )
 
 
 def test_same_inputs_produce_identical_score() -> None:

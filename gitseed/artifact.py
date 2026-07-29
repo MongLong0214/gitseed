@@ -7,6 +7,7 @@ from decimal import Decimal
 from hashlib import sha256
 from typing import Literal
 
+from .category import CategoryMatch, CategoryPack, Evidence, EvidenceRequirement, PackId, classify_all
 from .collect.search import Candidate, CollectResult
 from .evidence import ClaimBasis
 from .grade.smoke import SmokeResult
@@ -18,7 +19,7 @@ from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
 from .screen.verdict import findings, unverified
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SourceMode = Literal["metadata-only", "digest", "full-source"]
 
 
@@ -29,7 +30,7 @@ class EngineVersions:
     pipeline: str = "pipeline-v2"
     screening: str = "screening-v1"
     source_selection: str = "source-selection-v1"
-    category_packs: str = "category-packs-v1"
+    category_packs: str = "category-packs-v2"
 
 
 ENGINE_VERSIONS = EngineVersions()
@@ -70,6 +71,8 @@ class RepositoryTrace:
     files: ArtifactFiles | None
     grade: GradeResult | None
     failures: tuple[PortFailure, ...] = ()
+    category_evidence: tuple[Evidence, ...] = ()
+    categories: tuple[CategoryMatch, ...] = ()
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -251,12 +254,18 @@ class RunArtifact:
     engines: EngineVersions = ENGINE_VERSIONS
     source_mode: SourceMode = "digest"
     failures: tuple[PortFailure, ...] = ()
+    category_packs: tuple[CategoryPack, ...] = ()
+
+    def rederive_categories(self, repo: str) -> tuple[CategoryMatch, ...]:
+        trace = next(trace for trace in self.repositories if trace.candidate.repo == repo)
+        return classify_all(self.category_packs, trace.category_evidence)
 
     def to_bytes(self) -> bytes:
         payload = {
             "schema": SCHEMA_VERSION,
             "engines": asdict(self.engines),
             "source_mode": self.source_mode,
+            "category_packs": [_pack_to_dict(pack) for pack in self.category_packs],
             "input": asdict(self.request),
             "ports": {
                 "started_at": None if self.started_at is None else self.started_at.isoformat(),
@@ -278,7 +287,7 @@ class RunArtifact:
     @classmethod
     def from_bytes(cls, data: bytes) -> RunArtifact:
         payload = json.loads(data)
-        if payload.get("schema") not in (5, SCHEMA_VERSION):
+        if payload.get("schema") not in (5, 6, SCHEMA_VERSION):
             raise ArtifactVersionError(payload.get("schema"))
         ports = payload["ports"]
         output = payload["output"]
@@ -296,6 +305,7 @@ class RunArtifact:
             engines=EngineVersions(**payload["engines"]),
             source_mode=payload["source_mode"],
             failures=tuple(PortFailure(**failure) for failure in ports["failures"]),
+            category_packs=tuple(_pack_from_dict(pack) for pack in payload.get("category_packs", ())),
         )
 
 
@@ -378,6 +388,8 @@ def _trace_to_dict(trace: RepositoryTrace):
         "files": None if trace.files is None else asdict(trace.files),
         "grade": None if trace.grade is None else asdict(trace.grade),
         "failures": [asdict(failure) for failure in trace.failures],
+        "category_evidence": [_evidence_to_dict(item) for item in trace.category_evidence],
+        "categories": [_category_to_dict(item) for item in trace.categories],
     }
 
 
@@ -388,6 +400,50 @@ def _trace_from_dict(payload: dict) -> RepositoryTrace:
         _files_from_dict(payload["files"]),
         _grade_from_dict(payload["grade"]),
         tuple(PortFailure(**failure) for failure in payload["failures"]),
+        tuple(_evidence_from_dict(item) for item in payload.get("category_evidence", ())),
+        tuple(_category_from_dict(item) for item in payload.get("categories", ())),
+    )
+
+
+def _pack_to_dict(pack: CategoryPack) -> dict:
+    return {
+        "name": pack.name,
+        "version": pack.version,
+        "evidence": [asdict(requirement) for requirement in pack.evidence],
+    }
+
+
+def _pack_from_dict(payload: dict) -> CategoryPack:
+    return CategoryPack(
+        str(payload["name"]),
+        str(payload["version"]),
+        tuple(EvidenceRequirement(**requirement) for requirement in payload["evidence"]),
+    )
+
+
+def _evidence_to_dict(evidence: Evidence) -> dict:
+    return {"evidence": evidence.evidence, "values": sorted(evidence.values), "basis": evidence.basis.value}
+
+
+def _evidence_from_dict(payload: dict) -> Evidence:
+    return Evidence(str(payload["evidence"]), frozenset(payload["values"]), ClaimBasis(payload["basis"]))
+
+
+def _category_to_dict(category: CategoryMatch) -> dict:
+    return {
+        "category": category.category,
+        "pack": asdict(category.pack),
+        "basis": category.basis.value,
+        "missing_evidence": list(category.missing_evidence),
+    }
+
+
+def _category_from_dict(payload: dict) -> CategoryMatch:
+    return CategoryMatch(
+        payload["category"],
+        PackId(**payload["pack"]),
+        ClaimBasis(payload["basis"]),
+        tuple(payload["missing_evidence"]),
     )
 
 

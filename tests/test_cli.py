@@ -346,6 +346,26 @@ def test_radar_defaults_to_dry_run_before_any_approval_path() -> None:
     assert args.dry_run is True
 
 
+def test_list_categories_is_available_without_a_run(capsys) -> None:
+    assert main(["radar", "--list-categories"]) == 0
+    assert "coding-agents" in capsys.readouterr().out
+
+
+def test_category_flag_labels_a_qualifying_repository_and_an_honest_non_match(tmp_path, capsys) -> None:
+    _write_fixture(tmp_path)
+    (tmp_path / "clean" / "AGENTS.md").write_text("Repository instructions.")
+    (tmp_path / "clean" / "main.py").write_text("planner = Agent(tool=search)\n")
+
+    assert main(["radar", "--query", "example", "--fixtures", str(tmp_path), "--category", "coding-agents"]) == 0
+    qualified = next(line for line in capsys.readouterr().out.splitlines() if "fixture/clean" in line)
+    assert "coding-agents" in qualified and "uncategorized" not in qualified
+
+    (tmp_path / "clean" / "main.py").write_text("def add(a, b):\n    return a + b\n")
+    assert main(["radar", "--query", "example", "--fixtures", str(tmp_path), "--category", "coding-agents"]) == 0
+    unmatched = next(line for line in capsys.readouterr().out.splitlines() if "fixture/clean" in line)
+    assert "coding-agents: uncategorized (deterministic)" in unmatched
+
+
 def test_recorded_run_renders_offline_with_identical_output(tmp_path, capsys) -> None:
     # Given: a fixture-backed run records one canonical artifact.
     artifact = tmp_path / "run.json"
@@ -554,9 +574,10 @@ def test_every_failed_read_reports_zero_coverage_not_a_clean_run(tmp_path, capsy
         "has_license: 0.009649\n"
         "score coverage: 3/3\n"
         "unavailable features: none\n"
-        "security coverage: absent (0 files)\n"
-        "model coverage: model\n"
-        "security findings: none\n"
+            "security coverage: absent (0 files)\n"
+            "model coverage: model\n"
+            "category: coding-agents: uncategorized (absent), mcp: uncategorized (absent), local-ai: uncategorized (absent)\n"
+            "security findings: none\n"
         "unverified security claims: none\n"
         "risk: unknown\n"
         "recommendation: insufficient-evidence\n"
