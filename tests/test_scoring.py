@@ -17,6 +17,7 @@ from gitseed.scoring import (
     ScoreVersionMismatch,
     score,
 )
+from gitseed.evidence import ClaimBasis
 from gitseed.screen.signals import HIGH, LOW
 
 
@@ -129,6 +130,42 @@ def test_same_inputs_produce_identical_score() -> None:
     # Then: value, version, coverage, and incompleteness are identical.
     assert first == second
     assert first.incomplete_because == second.incomplete_because
+
+
+def test_raw_metadata_preserves_the_existing_score_status_and_ranking() -> None:
+    # The boolean fixture is the pre-issue-64 input shape. The measured fixture
+    # contains the same observations without collapsing their values.
+    before = {
+        "org/four": ScoreInputs(True, True, True),
+        "org/zero": ScoreInputs(False, False, False),
+        "org/unavailable": ScoreInputs(None, None, None),
+    }
+    after = {
+        "org/four": ScoreInputs.observed(4, 2, {"spdx_id": "MIT"}),
+        "org/zero": ScoreInputs.observed(0, 0, None, license_basis=ClaimBasis.DETERMINISTIC),
+        "org/unavailable": ScoreInputs.observed(None, None, None),
+    }
+
+    def rendered(inputs):
+        recommendations = {
+            repo: Recommendation(score(values), LOW)
+            for repo, values in inputs.items()
+        }
+        return (
+            {
+                repo: (item.score.value, item.score.coverage, item.status)
+                for repo, item in recommendations.items()
+            },
+            [
+                repo
+                for repo, _ in sorted(
+                    recommendations.items(),
+                    key=lambda item: (-item[1].score.value, item[0]),
+                )
+            ],
+        )
+
+    assert rendered(after) == rendered(before)
 
 
 def test_scoring_path_has_no_external_or_time_dependent_imports() -> None:

@@ -92,7 +92,7 @@ def test_rendering_a_failed_port_preserves_the_same_partial_result() -> None:
 def test_replay_requires_the_recorded_engine_version() -> None:
     # Given: a full-source artifact whose recorded pipeline version was changed.
     live_bytes = execute(RunRequest("small tools", 1), ports(), source_mode="full-source").to_bytes()
-    mismatched = live_bytes.replace(b'"pipeline":"pipeline-v1"', b'"pipeline":"pipeline-v0"')
+    mismatched = live_bytes.replace(b'"pipeline":"pipeline-v2"', b'"pipeline":"pipeline-v0"')
 
     # When: a replay asks this release to run the recorded engine.
     with pytest.raises(EngineVersionMismatch, match="pipeline engine changed"):
