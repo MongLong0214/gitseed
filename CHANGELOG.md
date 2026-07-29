@@ -1,8 +1,6 @@
 # Changelog
 
-## 0.2.0
-
-Initial tagged release.
+Newest first.
 
 ## 0.3.0 — 2026-07-29
 
@@ -153,3 +151,7 @@ Initial tagged release.
   claim that a recently-updated, low-attention repository is more likely to gain attention
   later. Gitseed has neither an expected-attention baseline nor time-separated outcome data to
   support that claim, for the same reason ADR-0012 gives. (#67)
+
+## 0.2.0 — 2026-07-28
+
+Initial tagged release.
