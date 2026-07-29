@@ -8,8 +8,11 @@ import json
 import os
 import re
 import socket
+import sqlite3
+import subprocess
 import sys
 import traceback
+from uuid import uuid4
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -30,6 +33,7 @@ from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, r
 from .review.trailers import render_block
 from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
+from .storage import SQLiteRunStore
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -40,6 +44,8 @@ PREFERRED_OLLAMA_MODELS: Final = (
 # A cold one-token reply from the local 32B model took about 23 seconds; a
 # multi-file digest needs several times that budget instead of the old 30-second default.
 DEFAULT_GRADE_TIMEOUT: Final = 120
+DEFAULT_STORE: Final = Path(".gitseed") / "runs.db"
+CLI_PROCESS_ID: Final = os.getpid()
 MODEL_OUTPUT_EXCERPT_CHARS: Final = 160
 EXIT_CODES: Final = "Exit codes: 0 complete; 1 invalid invocation or operational failure; 2 incomplete run."
 SCORE_LIMIT: Final = "Score measures small-versus-medium size; it does not predict that a repository will take off."
@@ -493,6 +499,10 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
     command.add_argument("--artifact", type=Path, help="write a replayable record of this run")
+    command.add_argument("--store", type=Path, default=DEFAULT_STORE, help="SQLite run history (default: ./.gitseed/runs.db)")
+    command.add_argument("--run-id", help="identifier for this stored run")
+    command.add_argument("--history", action="store_true", help="show stored runs in append order")
+    command.add_argument("--corrects", help="run ID corrected by this new stored run")
     command.add_argument(
         "--source-mode",
         choices=("metadata-only", "digest", "full-source"),
@@ -623,6 +633,62 @@ def _candidate_coverage(collection: ArtifactCollection) -> str:
 
 def _render(path: Path) -> RunArtifact:
     return render(path.read_bytes())
+
+
+def _history(path: Path, out: IO[str], err: IO[str]) -> int:
+    if not path.exists():
+        out.write("No stored runs.\n")
+        return 0
+    try:
+        with SQLiteRunStore(path) as store:
+            runs = store.history()
+    except (OSError, sqlite3.Error, ValueError) as error:
+        err.write(f"history failed: {error}\n")
+        return 1
+    if not runs:
+        out.write("No stored runs.\n")
+        return 0
+    for stored in runs:
+        decisions = ", ".join(
+            f"{item.repo}: {item.recommendation.status.value}"
+            for item in rank_review_items(stored.artifact)
+        ) or "no candidates"
+        correction = "" if stored.corrects_run_id is None else f"; corrects {stored.corrects_run_id}"
+        state = "complete" if stored.artifact.result.complete else "incomplete"
+        out.write(
+            f"{stored.run_id}: {state}; query {stored.artifact.request.query!r}; "
+            f"decided {decisions}{correction}\n"
+        )
+    return 0
+
+
+def _save_stored_artifact(path: Path, run_id: str, corrects_run_id: str | None, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with SQLiteRunStore(path) as store:
+        store.save(run_id, RunArtifact.from_bytes(data), corrects_run_id)
+
+
+def _store_run(path: Path, run_id: str, corrects_run_id: str | None, artifact: RunArtifact) -> None:
+    data = artifact.to_bytes()
+    if os.getpid() == CLI_PROCESS_ID:
+        _save_stored_artifact(path, run_id, corrects_run_id, data)
+        return
+    saved = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; from gitseed.cli import _save_stored_artifact; "
+            "_save_stored_artifact(Path(sys.argv[1]), sys.argv[2], sys.argv[3] or None, sys.stdin.buffer.read())",
+            str(path),
+            run_id,
+            corrects_run_id or "",
+        ],
+        input=data,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if saved.returncode:
+        raise sqlite3.OperationalError(saved.stderr.decode().strip().splitlines()[-1])
 
 
 def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> int:
@@ -775,6 +841,11 @@ def main(
         return _status(artifact, err, "replayed artifact")
     if args.command not in ("radar", "run"):
         return 1
+    if args.history:
+        if any((args.query, args.render, args.artifact, args.run_id, args.corrects)):
+            err.write("invalid invocation: --history cannot be combined with run options\n")
+            return 1
+        return _history(args.store, out, err)
     if args.render is not None:
         if args.query is not None:
             err.write("invalid invocation: --query cannot be used with --render\n")
@@ -827,6 +898,7 @@ def main(
             ),
             source_mode=args.source_mode,
         )
+        run_id = args.run_id or uuid4().hex
         if args.artifact is not None:
             args.artifact.write_bytes(recorded.to_bytes())
         review_items = rank_review_items(recorded)
@@ -835,20 +907,24 @@ def main(
         if status == 2:
             if recorded.result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
                 err.write("GitHub allows 60 unauthenticated requests/hour; set GITHUB_TOKEN for 5,000.\n")
+            _store_run(args.store, run_id, args.corrects, recorded)
             return 2
         if args.dry_run:
+            _store_run(args.store, run_id, args.corrects, recorded)
             return 0
         active_writer = writer or (fixture if fixture is not None else client)
         try:
             approvals = _approvals(review_items, args.approve_all, source_in, out)
         except NotInteractive as error:
             err.write(f"approval refused: {error}\n")
+            _store_run(args.store, run_id, args.corrects, recorded)
             return 1
         active_committer = committer or SubprocessGitCommitter(Path.cwd())
         try:
             intent_sha = record_decisions(approvals, active_committer)
         except CommitFailed as error:
             err.write(f"intent commit failed: {error}\n")
+            _store_run(args.store, run_id, args.corrects, recorded)
             return 1
         block = render_block(approvals)
         if block:
@@ -885,6 +961,7 @@ def main(
                 break
 
         if failed_at is None:
+            _store_run(args.store, run_id, args.corrects, recorded)
             return 0
 
         for approval in approvals[failed_at + 1:]:
@@ -915,8 +992,9 @@ def main(
                 )
             except CommitFailed as error:
                 err.write(f"compensation outcome commit failed; intent remains pending: {error}\n")
+        _store_run(args.store, run_id, args.corrects, recorded)
         return 1
-    except OSError as error:
+    except (OSError, sqlite3.Error) as error:
         # Check if this is a timeout error and provide actionable guidance
         if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
             err.write(f"run failed: {error}\n")

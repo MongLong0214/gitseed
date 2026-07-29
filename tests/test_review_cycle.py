@@ -248,6 +248,18 @@ def test_a_rejection_only_session_still_commits(tmp_path: Path) -> None:
     assert commits[0].count("Ruled-out:") == 3
 
 
+def test_broken_store_still_reaches_approval_and_accepts_rejection(tmp_path: Path) -> None:
+    # Given: run history cannot be opened because the requested database path is a directory.
+    # When: the reviewer rejects every proposed GitHub write.
+    exit_code, calls, transcript, _ = _run_under_pty(
+        tmp_path, [b"n\n", b"n\n", b"n\n"], "--store", str(tmp_path)
+    )
+    # Then: history failure is reported only after the approval gate, never instead of it.
+    assert exit_code == 1
+    assert transcript.count(PROMPT.decode()) >= 3
+    assert calls == []
+
+
 def test_dry_run_never_creates_a_decision_commit(tmp_path: Path) -> None:
     # Given: the default dry-run invocation (no --no-dry-run), so no approval is possible.
     result_path = tmp_path / "dry-run-result.json"
