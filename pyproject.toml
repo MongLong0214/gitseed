@@ -1,6 +1,6 @@
 [project]
 name = "gitseed"
-version = "0.2.0"
+version = "0.3.0"
 description = "Triage GitHub repositories with a local model you have actually verified."
 readme = "README.md"
 requires-python = ">=3.9"
