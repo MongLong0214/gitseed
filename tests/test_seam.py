@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import fields
 from datetime import datetime, timezone
 
@@ -60,6 +61,45 @@ def ports(files: Files | None = None) -> RunPorts:
     return RunPorts(Repository(), files or Files(), Model(), Clock())
 
 
+def artifact_with_search(sort: str):
+    from gitseed.collect.search import SearchParameters
+
+    class SearchRepository(Repository):
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(
+                candidates=[CANDIDATE],
+                pages_fetched=1,
+                search=SearchParameters(query, sort, "desc", 1, limit),
+            )
+
+    return execute(
+        RunRequest("small tools", 1),
+        RunPorts(SearchRepository(), Files(), Model(), Clock()),
+    )
+
+
+def test_search_parameters_round_trip_through_the_artifact() -> None:
+    recorded = artifact_with_search("updated")
+    payload = json.loads(recorded.to_bytes())
+
+    assert payload["ports"]["collection"]["search"] == {
+        "order": "desc",
+        "pages": 1,
+        "per_page": 1,
+        "query": "small tools",
+        "sort": "updated",
+    }
+    assert render(recorded.to_bytes()).collection.search == recorded.collection.search
+
+
+def test_artifacts_distinguish_runs_with_different_search_parameters() -> None:
+    updated = artifact_with_search("updated")
+    stars = artifact_with_search("stars")
+
+    assert updated.collection.search != stars.collection.search
+    assert updated.to_bytes() != stars.to_bytes()
+
+
 def test_rendering_an_artifact_offline_is_byte_identical() -> None:
     # Given: one live run records every response from its four ports.
     artifact = execute(RunRequest("small tools", 1), ports())
@@ -96,6 +136,17 @@ def test_replay_requires_the_recorded_engine_version() -> None:
 
     # When: a replay asks this release to run the recorded engine.
     with pytest.raises(EngineVersionMismatch, match="pipeline engine changed"):
+        replay(mismatched)
+
+
+def test_replay_requires_the_recorded_search_engine_version() -> None:
+    live_bytes = artifact_with_search("updated").to_bytes()
+    mismatched = live_bytes.replace(
+        b'"search":"github-search-v1"',
+        b'"search":"github-search-v0"',
+    )
+
+    with pytest.raises(EngineVersionMismatch, match="search engine changed"):
         replay(mismatched)
 
 

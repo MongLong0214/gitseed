@@ -126,6 +126,8 @@ class TestTruncationIsReported:
         assert result.search_incomplete is True
         assert result.total_count == 4
         assert result.complete_for_search is False
+        assert result.search is not None
+        assert (result.search.sort, result.search.order) == ("updated", "desc")
 
     def test_reported_total_larger_than_retrieved_is_partial(self) -> None:
         # Given: GitHub completes the response but its count exceeds the candidates returned.
@@ -306,6 +308,25 @@ class TestWaiting:
 
 
 class TestPaging:
+    def test_default_ordering_is_recorded_and_sent(self) -> None:
+        transport = FakeTransport([(200, OK, page([]))])
+
+        result = collect("language:python", transport=transport, pages=2, per_page=3)
+
+        assert result.search is not None
+        assert result.search.query == "language:python"
+        assert result.search.sort == "updated"
+        assert result.search.order == "desc"
+        assert result.search.pages == 2
+        assert result.search.per_page == 3
+        assert parse_qs(urlparse(transport.urls[0]).query) == {
+            "q": ["language:python"],
+            "sort": ["updated"],
+            "order": ["desc"],
+            "per_page": ["3"],
+            "page": ["1"],
+        }
+
     def test_a_search_query_is_percent_encoded_and_round_trips(self) -> None:
         # Given: GitHub syntax uses reserved characters alongside a separating space.
         transport = FakeTransport([(200, OK, page([]))])
@@ -314,7 +335,8 @@ class TestPaging:
         collect(query, transport=transport, per_page=3)
         # Then: the wire URL is valid and decodes to the original GitHub query.
         assert transport.urls == [
-            "https://api.github.com/search/repositories?q=language%3Apython+stars%3A%3E100%2Buseful&per_page=3&page=1"
+            "https://api.github.com/search/repositories?q=language%3Apython+stars%3A%3E100%2Buseful"
+            "&sort=updated&order=desc&per_page=3&page=1"
         ]
         assert parse_qs(urlparse(transport.urls[0]).query)["q"] == [query]
 

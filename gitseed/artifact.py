@@ -8,7 +8,7 @@ from hashlib import sha256
 from typing import Literal
 
 from .category import CategoryMatch, CategoryPack, Evidence, EvidenceRequirement, PackId, classify_all
-from .collect.search import Candidate, CollectResult
+from .collect.search import Candidate, CollectResult, SearchParameters
 from .evidence import ClaimBasis
 from .grade.smoke import SmokeResult
 from .grade.types import GradeResult
@@ -19,7 +19,7 @@ from .screen.coverage import SkippedFile, SourceCoverage
 from .screen.signals import Signal
 from .screen.verdict import findings, unverified
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 SourceMode = Literal["metadata-only", "digest", "full-source"]
 
 
@@ -31,6 +31,7 @@ class EngineVersions:
     screening: str = "screening-v1"
     source_selection: str = "source-selection-v1"
     category_packs: str = "category-packs-v2"
+    search: str = "github-search-v1"
 
 
 ENGINE_VERSIONS = EngineVersions()
@@ -93,6 +94,7 @@ class ArtifactCollection:
     pages_fetched: int
     total_count: int | None
     incomplete_results: bool
+    search: SearchParameters | None
 
     @property
     def complete_for_search(self) -> bool:
@@ -111,6 +113,7 @@ class ArtifactCollection:
             collected.pages_fetched,
             collected.total_count,
             collected.search_incomplete,
+            collected.search,
         )
 
 
@@ -287,11 +290,13 @@ class RunArtifact:
     @classmethod
     def from_bytes(cls, data: bytes) -> RunArtifact:
         payload = json.loads(data)
-        if payload.get("schema") not in (5, 6, SCHEMA_VERSION):
+        if payload.get("schema") not in (5, 6, 7, SCHEMA_VERSION):
             raise ArtifactVersionError(payload.get("schema"))
         ports = payload["ports"]
         output = payload["output"]
         started_at = ports["started_at"]
+        engines = dict(payload["engines"])
+        engines.setdefault("search", "unrecorded")
         return cls(
             request=RunRequest(**payload["input"]),
             started_at=None if started_at is None else datetime.fromisoformat(started_at),
@@ -302,7 +307,7 @@ class RunArtifact:
             result=_result_from_dict(output["result"]),
             scores=tuple(_scored_from_dict(scored) for scored in output["scores"]),
             model_smoke=_smoke_from_dict(ports["model_smoke"]),
-            engines=EngineVersions(**payload["engines"]),
+            engines=EngineVersions(**engines),
             source_mode=payload["source_mode"],
             failures=tuple(PortFailure(**failure) for failure in ports["failures"]),
             category_packs=tuple(_pack_from_dict(pack) for pack in payload.get("category_packs", ())),
@@ -320,6 +325,7 @@ def _candidate_from_dict(payload: dict[str, str | int]) -> Candidate:
 
 
 def _collection_from_dict(payload: dict) -> ArtifactCollection:
+    search = payload.get("search")
     return ArtifactCollection(
         candidates=tuple(_candidate_from_dict(candidate) for candidate in payload["candidates"]),
         complete=bool(payload["complete"]),
@@ -327,6 +333,7 @@ def _collection_from_dict(payload: dict) -> ArtifactCollection:
         pages_fetched=int(payload["pages_fetched"]),
         total_count=payload["total_count"],
         incomplete_results=bool(payload["incomplete_results"]),
+        search=None if search is None else SearchParameters(**search),
     )
 
 
