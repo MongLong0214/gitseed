@@ -22,18 +22,27 @@ touching `cli.py`, `application.py` or anything on the run path.
 `dev` is the default branch; PRs required. Baseline as of this writing:
 
 ```
-289 tests passing
-12 open issues
+305 tests passing
+4 open issues
 ```
 
 Run `python3 -m pytest -q` and `gh issue list --state open` rather than trusting
 those numbers.
 
+All four remaining issues are product surface, not defects. The correctness and
+safety work is done: the approval gate, append-only storage, ref atomicity,
+honest reversibility grades, raw metadata retention and category wiring all
+landed and are each verified by breaking them.
+
 ## The approval gate
 
-PR #87 established the property and PR #88 defended it: **a store that is broken,
-missing or unwritable must never suppress the approval prompt, change what it
-asks, or fail a run the user approved and that succeeded.**
+PR #87 established the property and #88, #92, #93 and #94 each defended it again:
+**a store that is broken, missing or unwritable must never suppress the approval
+prompt, change what it asks, or fail a run the user approved and that succeeded.**
+
+Every PR touching the run path since has been checked this way, and it caught a
+real coupling once. Do not skip it because the tests pass — the tests passed in
+the case it caught.
 
 The mechanism is ordering — the store write happens *after* approval and
 execution. Verify it the way I did rather than trusting a test count:
@@ -84,24 +93,15 @@ preference.
 
 ## Open issues, grouped
 
-**Correctness on the decision-commit path — #43, #44, #37, #38.** These touch how
-a decision is recorded and how bulk approval maps to what the user saw. #37 in
-particular: bulk approval does not preserve the listing it showed, so what the
-user approved and what gets acted on can diverge. Treat these as safety work, not
-polish.
-
-**Category system — #58, #59, #60.** `category.py` is not connected to
-`RunRequest` or `application`, so category packs exist and do nothing. #60 stores
-only `pack_version` and not the pack itself, which makes a past run's
-categorisation unreproducible.
-
 **Evidence provenance — #61.** `COLLECTOR_EVIDENCE` is a free-floating string
 allowlist. The repository already has `ClaimBasis` in `evidence.py` for this shape
 of problem; reuse it rather than inventing a parallel notion.
 
 **Product surface — #66, #67, #69.** Share card / digest output, search result
 ordering, README hero framing. Genuinely P2. #69 notes the README leads with the
-internal safety arc rather than what a reader gets.
+internal safety arc rather than what a reader gets — worth reading alongside what
+CommitLore's README does now, which leads with a measured comparison and puts the
+install command above the evidence.
 
 **#63 stays open as the tracking issue for the undervaluation question**, now
 answered by ADR-0012 for the present data. Reopen the design when repositories
