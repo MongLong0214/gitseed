@@ -26,6 +26,10 @@ class StoredObservation:
     stars: int
 
 
+class ObservationWriteError(RuntimeError):
+    """The run was stored but its derived observation could not be appended."""
+
+
 class SQLiteRunStore:
     def __init__(self, path: str | Path) -> None:
         self._connection = sqlite3.connect(path)
@@ -58,15 +62,19 @@ class SQLiteRunStore:
                 "VALUES (?, ?, ?)",
                 (run_id, corrects_run_id, artifact.to_bytes()),
             )
-            if artifact.started_at is not None:
-                self._connection.executemany(
-                    "INSERT INTO repository_observations (run_id, repo, observed_at, stars) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        (run_id, candidate.repo, artifact.started_at.isoformat(), candidate.stars)
-                        for candidate in artifact.collection.candidates
-                    ),
-                )
+        if artifact.started_at is not None:
+            try:
+                with self._connection:
+                    self._connection.executemany(
+                        "INSERT INTO repository_observations (run_id, repo, observed_at, stars) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            (run_id, candidate.repo, artifact.started_at.isoformat(), candidate.stars)
+                            for candidate in artifact.collection.candidates
+                        ),
+                    )
+            except sqlite3.Error as error:
+                raise ObservationWriteError(str(error)) from error
 
     def load(self, run_id: str) -> RunArtifact:
         row = self._connection.execute(

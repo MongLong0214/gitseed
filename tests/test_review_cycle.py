@@ -262,7 +262,7 @@ def test_broken_store_still_reaches_approval_and_accepts_rejection(tmp_path: Pat
     assert calls == []
 
 
-def test_broken_observation_write_still_reaches_approval(tmp_path: Path) -> None:
+def test_broken_observation_write_is_reported_after_approval(tmp_path: Path) -> None:
     # Given: the artifact store opens, but its new observation insert fails.
     store_path = tmp_path / "runs.db"
     with SQLiteRunStore(store_path):
@@ -280,10 +280,39 @@ def test_broken_observation_write_still_reaches_approval(tmp_path: Path) -> None
         tmp_path, [b"n\n", b"n\n", b"n\n"], "--store", str(store_path)
     )
 
-    # Then: the observation failure arrives only after every approval prompt.
-    assert exit_code == 1
+    # Then: the observation failure arrives only after every approval prompt and is reported.
+    assert exit_code == 0
     assert transcript.count(PROMPT.decode()) >= 3
     assert calls == []
+    assert "observation write failed: observation write unavailable" in transcript
+
+
+def test_approval_survives_a_broken_observation_write(tmp_path: Path) -> None:
+    # Given: the artifact store opens, but its new observation insert fails.
+    store_path = tmp_path / "runs.db"
+    with SQLiteRunStore(store_path):
+        pass
+    connection = sqlite3.connect(store_path)
+    connection.execute(
+        "CREATE TRIGGER observations_fail BEFORE INSERT ON repository_observations "
+        "BEGIN SELECT RAISE(ABORT, 'observation write unavailable'); END;"
+    )
+    connection.commit()
+    connection.close()
+
+    # When: the reviewer approves a write and otherwise follows the normal prompt flow.
+    exit_code, calls, transcript, _ = _run_under_pty(
+        tmp_path, [b"s\n", b"n\n", b"q\n"], "--store", str(store_path)
+    )
+
+    # Then: bookkeeping failure cannot suppress or alter the approval outcome.
+    assert exit_code == 0
+    assert calls == [["star", "fixture/clean"]]
+    assert transcript.count("  " + PROMPT.decode()) == 3
+    assert "observation write failed: observation write unavailable" in transcript
+    with SQLiteRunStore(store_path) as store:
+        assert len(store.history()) == 1
+        assert store.observations() == ()
 
 
 def test_dry_run_never_creates_a_decision_commit(tmp_path: Path) -> None:
