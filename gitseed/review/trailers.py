@@ -8,16 +8,10 @@
 "고려했고 아니라고 결정했다" 를 뜻하고 `|` 뒤에 이유를 요구하기 때문이다 —
 이유 없는 거부를 문법이 거부한다.
 
-`Verified:`/`Ruled-out:`/`Evidence:` 는 SPEC 상 반복 가능(repeatable)하므로
-결정마다 하나씩 나열해도 된다. `Blast:`/`Undo:`/`Provenance:` 는 반복 불가능한
-키다 — 한 커밋(하나의 레코드)에 두 번 나오면 `commitlore validate` 가
-cardinality 위반으로 거부한다. `render_block` 이 실제로 만드는 것은 커밋
-메시지 본문이고, 커밋 메시지에는 제목 줄이 있다: 제목 + 빈 줄 + 이 블록이
-합쳐지면 블록 전체가 **하나의 레코드**로 파싱된다(각 줄이 `Record-Id:` 를
-선언하지 않는 한 — SPEC §2.4). 그래서 이 함수들은 세션당 반복 불가능한 키를
-정확히 한 번만 낸다: `approval_trailers` 는 결정 하나의 반복 가능한 줄만
-반환하고, `render_block` 이 세션 전체에 대해 한 번만 `Blast:`/`Undo:`/
-`Provenance:` 를 덧붙인다.
+`Verified:`/`Ruled-out:`/`Evidence:` are repeatable, but `Blast:`/`Undo:`/
+`Provenance:` are not. An intent commit is one record, so `render_block` emits
+its session-wide keys once. `Undo:` belongs only to the later per-action outcome
+record, where the action and its result are known.
 """
 
 from __future__ import annotations
@@ -42,10 +36,8 @@ def approval_trailers(approval: Approval, *, reason: str = "") -> list[str]:
     적는다. 빈 이유를 조용히 넣으면 `Ruled-out:` 이 분리자만 남은 채로
     통과하고, 나중에 읽는 사람은 이유가 지워진 것인지 없던 것인지 모른다.
 
-    `Blast:`/`Undo:`/`Provenance:` 는 여기 없다 — 세션 전체에 한 번만 나가야
-    하는 반복 불가능 키라서 `render_block` 이 낸다. 이 함수 하나만 호출해
-    커밋에 쓰면 그 세 키가 통째로 빠진다는 뜻이고, 그 경우 값을 직접
-    붙이는 것은 호출자의 몫이다.
+    `Blast:` and `Provenance:` are added once by `render_block`; `Undo:` is
+    derived later by `render_outcome`, once the action result is known.
     """
     audit = (
         f"prompt={approval.prompt}; answer={approval.answer}; "
@@ -73,10 +65,9 @@ def render_block(approvals: list[Approval], *, reasons: dict[str, str] | None = 
     빈 목록은 빈 문자열을 낸다 — 아무 판단도 하지 않은 세션은 트레일러를
     남기지 않는다. 판단 없음을 판단으로 기록하면 로그가 거짓말을 한다.
 
-    `Blast: system`/`Undo: easy` 는 실제 외부 쓰기(star/follow)가 하나라도
-    있을 때만 붙는다 — 전건 거부 세션은 아무 것도 바꾸지 않았으므로 블라스트
-    반경을 주장할 게 없다. `Provenance: authored` 는 결정 내용과 무관하게
-    항상 붙는다 — 거부든 승인이든 이 기록을 사람이 만들었다는 사실은 같다.
+    `Blast: system` marks an intent that authorized an external action. The
+    intent does not claim reversibility because the action has not happened yet.
+    `Provenance: authored` applies to every decision, including rejections.
     """
     if not approvals:
         return ""
@@ -86,7 +77,6 @@ def render_block(approvals: list[Approval], *, reasons: dict[str, str] | None = 
         lines.extend(approval_trailers(approval, reason=why.get(approval.target, "")))
     if any(approval.decision is not Decision.REJECT for approval in approvals):
         lines.append(_fold("Blast", "system"))
-        lines.append(_fold("Undo", "easy"))
     lines.append(_fold("Provenance", "authored"))
     return "\n".join(lines) + "\n"
 
@@ -94,19 +84,37 @@ def render_block(approvals: list[Approval], *, reasons: dict[str, str] | None = 
 def render_outcome(outcome: ActionOutcome) -> str:
     detail = f"; detail={outcome.detail}" if outcome.detail else ""
     blast = "local" if outcome.status is OutcomeStatus.NOT_ATTEMPTED else "system"
-    undo = (
-        "costly"
-        if outcome.status in (OutcomeStatus.CALL_FAILED, OutcomeStatus.COMPENSATION_FAILED)
-        else "easy"
-    )
+    limit = ""
+    if outcome.status is OutcomeStatus.NOT_ATTEMPTED:
+        undo = "easy"
+    elif outcome.status is OutcomeStatus.CALL_FAILED:
+        undo = "permanent"
+        limit = "the remote result is unknown, so a safe reversal cannot be proven"
+    elif outcome.status is OutcomeStatus.COMPENSATED:
+        undo = "permanent"
+        limit = "compensation cannot recall external effects already emitted"
+    elif outcome.status is OutcomeStatus.COMPENSATION_FAILED:
+        undo = "permanent"
+        limit = "compensation failed, leaving the remote state inconsistent"
+    elif outcome.action == "star":
+        undo = "easy"
+    else:
+        undo = "costly"
+        limit = "a follow notification may already have been delivered and cannot be recalled"
     lines = [
         _fold(
             "Verified",
             f"{outcome.action} {outcome.approval.target} {outcome.status.value}; "
             f"approved-at={outcome.approval.at.isoformat()}{detail}",
         ),
-        _fold("Blast", blast),
-        _fold("Undo", undo),
-        _fold("Provenance", "authored"),
     ]
+    if limit:
+        lines.append(_fold("Limit", limit))
+    lines.extend(
+        [
+            _fold("Blast", blast),
+            _fold("Undo", undo),
+            _fold("Provenance", "authored"),
+        ]
+    )
     return "\n".join(lines) + "\n"

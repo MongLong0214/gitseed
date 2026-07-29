@@ -278,4 +278,5 @@ def test_third_target_failure_compensates_prior_targets_and_records_compensation
         message for message in committed
         if "Verified: star fixture/second compensation failed" in message
     )
-    assert "Undo: costly" in compensation_failure
+    assert "Limit: compensation failed, leaving the remote state inconsistent" in compensation_failure
+    assert "Undo: permanent" in compensation_failure
