@@ -4,8 +4,18 @@ from dataclasses import replace
 
 import pytest
 
-from gitseed.category import CATEGORY_PACKS, CategoryPack, Evidence, EvidenceRequirement, classify
+from gitseed.category import (
+    CATEGORY_PACKS,
+    CategoryPack,
+    Evidence,
+    EvidenceRequirement,
+    FileEvidenceReader,
+    classify,
+    satisfiable_evidence,
+)
+from gitseed.collect.search import Candidate
 from gitseed.evidence import ClaimBasis
+from gitseed.pipeline.run import FetchedFiles
 
 
 def test_unreadable_evidence_is_absent_not_an_uncategorized_match() -> None:
@@ -66,12 +76,28 @@ def test_model_only_evidence_is_uncategorized_until_the_basis_changes() -> None:
 
 def test_pack_rejects_evidence_the_collector_cannot_produce() -> None:
     # Given/When: a pack asks the collector for a non-existent evidence source.
-    with pytest.raises(ValueError, match="webhooks"):
+    with pytest.raises(
+        ValueError,
+        match="category pack 'webhook-driven' names unavailable evidence: webhooks",
+    ):
         CategoryPack(
             name="webhook-driven",
             version="v1",
             evidence=(EvidenceRequirement("webhooks", "receiver"),),
         )
+
+
+def test_satisfiable_evidence_is_derived_from_reader_output() -> None:
+    reader = FileEvidenceReader()
+    produced = reader.read_evidence(
+        Candidate("org/repo", "org", "", 0, ""),
+        FetchedFiles(()),
+        None,
+    )
+
+    assert satisfiable_evidence(reader) == frozenset(item.evidence for item in produced) == frozenset(
+        producer.__name__.removeprefix("_") for producer in reader._producers
+    )
 
 
 def test_classifier_is_deterministic_for_the_same_evidence_and_pack_version() -> None:

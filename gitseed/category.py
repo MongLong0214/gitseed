@@ -28,7 +28,13 @@ class Evidence:
 class FileEvidenceReader:
     """Extract the small, deterministic evidence vocabulary category packs use."""
 
-    evidence_names: Final = frozenset({"files", "manifest_entries", "dependencies", "source"})
+    @property
+    def evidence_names(self) -> frozenset[str]:
+        return frozenset(self._producer_name(producer) for producer in self._producers)
+
+    @property
+    def _producers(self):
+        return (self._files, self._manifest_entries, self._dependencies, self._source)
 
     def read_evidence(
         self,
@@ -37,35 +43,67 @@ class FileEvidenceReader:
         metadata: RepositoryMetadata | None,
     ) -> tuple[Evidence, ...]:
         basis = ClaimBasis.DETERMINISTIC if files.complete else ClaimBasis.ABSENT
+        return tuple(producer(files, basis) for producer in self._producers)
+
+    def _files(self, files: FetchedFiles, basis: ClaimBasis) -> Evidence:
+        return Evidence(
+            self._producer_name(self._files),
+            frozenset({"AGENTS.md"} if any(path == "AGENTS.md" for path, _ in files.files) else ()),
+            basis,
+        )
+
+    def _manifest_entries(self, files: FetchedFiles, basis: ClaimBasis) -> Evidence:
+        return Evidence(
+            self._producer_name(self._manifest_entries),
+            frozenset({"mcp"} if "mcp" in self._manifest(files) else ()),
+            basis,
+        )
+
+    def _dependencies(self, files: FetchedFiles, basis: ClaimBasis) -> Evidence:
+        return Evidence(
+            self._producer_name(self._dependencies),
+            frozenset({"ollama"} if "ollama" in self._manifest(files) else ()),
+            basis,
+        )
+
+    def _source(self, files: FetchedFiles, basis: ClaimBasis) -> Evidence:
         contents = "\n".join(text.lower() for path, text in files.files if path != "AGENTS.md")
-        paths = {path for path, _ in files.files}
-        manifest = "\n".join(
+        source_signal = "agent" in contents and bool(re.search(r"\b(tool|planner|executor)\b", contents))
+        return Evidence(
+            self._producer_name(self._source),
+            frozenset({"agent-runtime"} if source_signal else ()),
+            basis,
+        )
+
+    def _manifest(self, files: FetchedFiles) -> str:
+        return "\n".join(
             text.lower()
             for path, text in files.files
             if path.rsplit("/", 1)[-1] in {"package.json", "pyproject.toml", "Cargo.toml", "go.mod", "requirements.txt"}
         )
-        source_signal = "agent" in contents and bool(re.search(r"\b(tool|planner|executor)\b", contents))
-        return (
-            Evidence("files", frozenset({"AGENTS.md"} if "AGENTS.md" in paths else ()), basis),
-            Evidence("manifest_entries", frozenset({"mcp"} if "mcp" in manifest else ()), basis),
-            Evidence("dependencies", frozenset({"ollama"} if "ollama" in manifest else ()), basis),
-            Evidence("source", frozenset({"agent-runtime"} if source_signal else ()), basis),
-        )
+
+    def _producer_name(self, producer) -> str:
+        return producer.__name__.removeprefix("_")
 
 
 DEFAULT_EVIDENCE_READER: Final = FileEvidenceReader()
 
 
+def satisfiable_evidence(reader: FileEvidenceReader = DEFAULT_EVIDENCE_READER) -> frozenset[str]:
+    return reader.evidence_names
+
+
 def absent_evidence() -> tuple[Evidence, ...]:
-    return tuple(Evidence(name, frozenset(), ClaimBasis.ABSENT) for name in DEFAULT_EVIDENCE_READER.evidence_names)
+    return tuple(Evidence(name, frozenset(), ClaimBasis.ABSENT) for name in satisfiable_evidence())
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
 class UnavailableEvidence(ValueError):
+    pack: str
     evidence: tuple[str, ...]
 
     def __str__(self) -> str:
-        return f"category pack names unavailable evidence: {', '.join(self.evidence)}"
+        return f"category pack {self.pack!r} names unavailable evidence: {', '.join(self.evidence)}"
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -123,10 +161,14 @@ class CategoryMatch:
 Categorization = CategoryMatch
 
 
-def validate_pack(pack: CategoryPack, evidence_names: frozenset[str] = DEFAULT_EVIDENCE_READER.evidence_names) -> None:
-    missing = tuple(requirement.evidence for requirement in pack.evidence if requirement.evidence not in evidence_names)
+def validate_pack(pack: CategoryPack, reader: FileEvidenceReader = DEFAULT_EVIDENCE_READER) -> None:
+    missing = tuple(
+        requirement.evidence
+        for requirement in pack.evidence
+        if requirement.evidence not in satisfiable_evidence(reader)
+    )
     if missing:
-        raise UnavailableEvidence(missing)
+        raise UnavailableEvidence(pack.name, missing)
     if not pack.evidence:
         raise ValueError("category pack requires deterministic evidence")
 
