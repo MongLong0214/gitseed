@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Final
 
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -66,6 +66,30 @@ def _migrate_from(version: int, connection: sqlite3.Connection) -> None:
             BEFORE DELETE ON run_artifacts
             BEGIN
                 SELECT RAISE(ABORT, 'run artifacts are immutable');
+            END;
+            """
+        )
+        return
+    if version == 1:
+        connection.executescript(
+            """
+            CREATE TABLE repository_observations (
+                observation_id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES run_artifacts(run_id),
+                repo TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                stars INTEGER NOT NULL,
+                UNIQUE (run_id, repo)
+            );
+            CREATE TRIGGER repository_observations_no_update
+            BEFORE UPDATE ON repository_observations
+            BEGIN
+                SELECT RAISE(ABORT, 'repository observations are immutable');
+            END;
+            CREATE TRIGGER repository_observations_no_delete
+            BEFORE DELETE ON repository_observations
+            BEGIN
+                SELECT RAISE(ABORT, 'repository observations are immutable');
             END;
             """
         )

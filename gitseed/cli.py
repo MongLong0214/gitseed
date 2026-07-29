@@ -33,7 +33,7 @@ from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, r
 from .review.trailers import render_block
 from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
-from .storage import SQLiteRunStore
+from .storage import ObservationWriteError, SQLiteRunStore, StoredObservation
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -635,6 +635,16 @@ def _render(path: Path) -> RunArtifact:
     return render(path.read_bytes())
 
 
+def _observation_summary(first: StoredObservation, current: StoredObservation) -> str:
+    first_recorded = f"first recorded observation {first.observed_at.isoformat()}: {first.stars} stars"
+    if current == first:
+        return first_recorded + " (no growth yet)"
+    change = current.stars - first.stars
+    if change == 0:
+        return first_recorded + f"; now {current.stars} stars (unchanged since first recorded observation)"
+    return first_recorded + f"; now {current.stars} stars (changed {change:+d} stars since first recorded observation)"
+
+
 def _history(path: Path, out: IO[str], err: IO[str]) -> int:
     if not path.exists():
         out.write("No stored runs.\n")
@@ -642,12 +652,18 @@ def _history(path: Path, out: IO[str], err: IO[str]) -> int:
     try:
         with SQLiteRunStore(path) as store:
             runs = store.history()
+            observations = store.observations()
     except (OSError, sqlite3.Error, ValueError) as error:
         err.write(f"history failed: {error}\n")
         return 1
     if not runs:
         out.write("No stored runs.\n")
         return 0
+    first_by_repo: dict[str, StoredObservation] = {}
+    observations_by_run: dict[str, list[StoredObservation]] = {}
+    for observation in observations:
+        first_by_repo.setdefault(observation.repo, observation)
+        observations_by_run.setdefault(observation.run_id, []).append(observation)
     for stored in runs:
         decisions = ", ".join(
             f"{item.repo}: {item.recommendation.status.value}"
@@ -655,40 +671,52 @@ def _history(path: Path, out: IO[str], err: IO[str]) -> int:
         ) or "no candidates"
         correction = "" if stored.corrects_run_id is None else f"; corrects {stored.corrects_run_id}"
         state = "complete" if stored.artifact.result.complete else "incomplete"
+        observed = ", ".join(
+            f"{observation.repo}: {_observation_summary(first_by_repo[observation.repo], observation)}"
+            for observation in observations_by_run.get(stored.run_id, [])
+        )
+        observation_suffix = "" if not observed else f"; observed {observed}"
         out.write(
             f"{stored.run_id}: {state}; query {stored.artifact.request.query!r}; "
-            f"decided {decisions}{correction}\n"
+            f"decided {decisions}{correction}{observation_suffix}\n"
         )
     return 0
 
 
-def _save_stored_artifact(path: Path, run_id: str, corrects_run_id: str | None, data: bytes) -> None:
+def _save_stored_artifact(path: Path, run_id: str, corrects_run_id: str | None, data: bytes) -> str | None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with SQLiteRunStore(path) as store:
-        store.save(run_id, RunArtifact.from_bytes(data), corrects_run_id)
+    try:
+        with SQLiteRunStore(path) as store:
+            store.save(run_id, RunArtifact.from_bytes(data), corrects_run_id)
+    except ObservationWriteError as error:
+        return str(error)
+    return None
 
 
-def _store_run(path: Path, run_id: str, corrects_run_id: str | None, artifact: RunArtifact) -> None:
+def _store_run(path: Path, run_id: str, corrects_run_id: str | None, artifact: RunArtifact, err: IO[str]) -> None:
     data = artifact.to_bytes()
     if os.getpid() == CLI_PROCESS_ID:
-        _save_stored_artifact(path, run_id, corrects_run_id, data)
-        return
-    saved = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from pathlib import Path; import sys; from gitseed.cli import _save_stored_artifact; "
-            "_save_stored_artifact(Path(sys.argv[1]), sys.argv[2], sys.argv[3] or None, sys.stdin.buffer.read())",
-            str(path),
-            run_id,
-            corrects_run_id or "",
-        ],
-        input=data,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-    if saved.returncode:
-        raise sqlite3.OperationalError(saved.stderr.decode().strip().splitlines()[-1])
+        observation_error = _save_stored_artifact(path, run_id, corrects_run_id, data)
+    else:
+        saved = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; from gitseed.cli import _save_stored_artifact; "
+                "print(_save_stored_artifact(Path(sys.argv[1]), sys.argv[2], sys.argv[3] or None, sys.stdin.buffer.read()) or '')",
+                str(path),
+                run_id,
+                corrects_run_id or "",
+            ],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if saved.returncode:
+            raise sqlite3.OperationalError(saved.stderr.decode().strip().splitlines()[-1])
+        observation_error = saved.stdout.decode().strip() or None
+    if observation_error is not None:
+        err.write(f"observation write failed: {observation_error}\n")
 
 
 def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> int:
@@ -907,24 +935,24 @@ def main(
         if status == 2:
             if recorded.result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
                 err.write("GitHub allows 60 unauthenticated requests/hour; set GITHUB_TOKEN for 5,000.\n")
-            _store_run(args.store, run_id, args.corrects, recorded)
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 2
         if args.dry_run:
-            _store_run(args.store, run_id, args.corrects, recorded)
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 0
         active_writer = writer or (fixture if fixture is not None else client)
         try:
             approvals = _approvals(review_items, args.approve_all, source_in, out)
         except NotInteractive as error:
             err.write(f"approval refused: {error}\n")
-            _store_run(args.store, run_id, args.corrects, recorded)
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 1
         active_committer = committer or SubprocessGitCommitter(Path.cwd())
         try:
             intent_sha = record_decisions(approvals, active_committer)
         except CommitFailed as error:
             err.write(f"intent commit failed: {error}\n")
-            _store_run(args.store, run_id, args.corrects, recorded)
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 1
         block = render_block(approvals)
         if block:
@@ -961,7 +989,7 @@ def main(
                 break
 
         if failed_at is None:
-            _store_run(args.store, run_id, args.corrects, recorded)
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 0
 
         for approval in approvals[failed_at + 1:]:
@@ -992,7 +1020,7 @@ def main(
                 )
             except CommitFailed as error:
                 err.write(f"compensation outcome commit failed; intent remains pending: {error}\n")
-        _store_run(args.store, run_id, args.corrects, recorded)
+        _store_run(args.store, run_id, args.corrects, recorded, err)
         return 1
     except (OSError, sqlite3.Error) as error:
         # Check if this is a timeout error and provide actionable guidance
