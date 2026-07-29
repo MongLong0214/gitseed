@@ -4,11 +4,15 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="gitseed repository triage: find, screen, grade, then pass through a human approval gate">
 </p>
 
-gitseed finds GitHub repositories, screens the files it can read for deterministic security signals, and grades survivors with a local model.
+gitseed finds GitHub repositories worth a look, screens them for deterministic signals, and presents a ranked queue for a human to decide one at a time.
 
-It presents a ranked review queue for a human to decide one item at a time. `--dry-run` is the default.
+It does not have a growth or undervaluation score yet: the data to compute one does not exist.
 
-An incomplete run is not presented as a quiet one: collection limits, file-reading failures, and model failures remain in the output.
+```sh
+python3 -m pip install git+https://github.com/MongLong0214/gitseed.git
+```
+
+`--dry-run` is the default. An incomplete run is not presented as a quiet one: collection limits, file-reading failures, and model failures remain in the output. Any external write action requires interactive human approval.
 
 [![CI](https://github.com/MongLong0214/gitseed/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/MongLong0214/gitseed/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
