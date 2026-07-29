@@ -31,11 +31,13 @@ overload, no default, and no path that skips deriving the message from
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
 from .actions import ActionOutcome
-from .approval import Approval, Decision
+from .approval import BULK_LISTING_ROW_LIMIT, Approval, Decision
 from .trailers import render_block, render_outcome
 
 
@@ -120,10 +122,42 @@ def record_decisions(
     the list before rendering it — the commit is for whatever was actually
     decided, approved or not.
     """
-    block = render_block(list(approvals), reasons=dict(reasons) if reasons else None)
+    block = render_decisions(approvals, reasons=reasons)
     if not block:
         return None
     return committer.commit(f"{_summary(approvals)}\n\n{block}")
+
+
+def render_decisions(
+    approvals: Sequence[Approval],
+    *,
+    reasons: Mapping[str, str] | None = None,
+) -> str:
+    """Render the bounded trailer block used by both stdout and the commit."""
+    recorded = list(approvals)
+    if not reasons:
+        recorded = _collapse_large_bulk_groups(recorded)
+    return render_block(recorded, reasons=dict(reasons) if reasons else None)
+
+
+def _collapse_large_bulk_groups(approvals: list[Approval]) -> list[Approval]:
+    keys = [
+        (approval.prompt, approval.answer, approval.at, approval.decision)
+        for approval in approvals
+    ]
+    counts = Counter(keys)
+    emitted = set()
+    recorded: list[Approval] = []
+    for approval, key in zip(approvals, keys):
+        count = counts[key]
+        if not approval.bulk or count <= BULK_LISTING_ROW_LIMIT:
+            recorded.append(approval)
+        elif key not in emitted:
+            recorded.append(
+                replace(approval, target=f"<{count} bulk targets; listing recorded in prompt>")
+            )
+            emitted.add(key)
+    return recorded
 
 
 def record_outcome(outcome: ActionOutcome, committer: GitCommitter) -> str:

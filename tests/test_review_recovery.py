@@ -175,6 +175,7 @@ def test_a_crash_after_intent_leaves_a_reconstructable_commit(tmp_path: Path, mo
 
 def test_intent_persistence_failure_issues_no_external_call() -> None:
     writer = RecordingWriter()
+    stdout = io.StringIO()
     stderr = io.StringIO()
 
     exit_code = main(
@@ -182,12 +183,13 @@ def test_intent_persistence_failure_issues_no_external_call() -> None:
         writer=writer,
         committer=IntentFailingCommitter(),
         stdin=Tty("s\n"),
-        stdout=io.StringIO(),
+        stdout=stdout,
         stderr=stderr,
     )
 
     assert exit_code == 1
     assert writer.calls == []
+    assert "[s]tar [f]ollow [b]oth" in stdout.getvalue()
     assert "intent commit failed: intent storage unavailable" in stderr.getvalue()
 
 

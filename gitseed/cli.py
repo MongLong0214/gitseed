@@ -29,8 +29,14 @@ from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
 from .review.actions import ActionOutcome, GitHubWriter, OutcomeStatus, Performed, perform, undo
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
-from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions, record_outcome
-from .review.trailers import render_block
+from .review.commit import (
+    CommitFailed,
+    GitCommitter,
+    SubprocessGitCommitter,
+    record_decisions,
+    record_outcome,
+    render_decisions,
+)
 from .screen.coverage import SkippedFile, SourceCoverage
 from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
 from .storage import ObservationWriteError, SQLiteRunStore, StoredObservation
@@ -954,7 +960,7 @@ def main(
             err.write(f"intent commit failed: {error}\n")
             _store_run(args.store, run_id, args.corrects, recorded, err)
             return 1
-        block = render_block(approvals)
+        block = render_decisions(approvals)
         if block:
             out.write(block)
         if intent_sha is not None:

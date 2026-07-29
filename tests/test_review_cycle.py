@@ -225,6 +225,10 @@ def test_approve_all_asks_once_and_derives_one_approval_per_target(tmp_path: Pat
     # And: one intent commit carries all decisions, followed by one outcome per action.
     assert len(commits) == 4
     assert commits[0].count("Verified:") == 3
+    assert "weight_version" in commits[0]
+    assert "coverage" in commits[0]
+    assert "risk" in commits[0]
+    assert "recommendation" in commits[0]
 
 
 def test_quitting_before_any_decision_commits_nothing(tmp_path: Path) -> None:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import inspect
 from datetime import datetime, timezone
@@ -313,6 +314,42 @@ def test_bulk_approvals_are_marked_as_bulk_in_what_the_person_saw() -> None:
     """건별로 본 것과 일괄로 본 것을 트레일러만 보고 구분할 수 있어야 한다."""
     approvals = collect_bulk_approval(["a", "b"], "목록", stdin=Tty("s\n"), stdout=io.StringIO(), now=lambda: AT)
     assert all("일괄 승인: 2건" in a.prompt for a in approvals)
+
+
+def test_bulk_approval_record_preserves_the_displayed_listing() -> None:
+    listing = "rank  repo   score\n1     org/a  9\n2     org/b  7\n3     org/c  4"
+    approvals = collect_bulk_approval(
+        ["org/a", "org/b", "org/c"],
+        listing,
+        stdin=Tty("s\n"),
+        stdout=io.StringIO(),
+        now=lambda: AT,
+    )
+
+    block = render_block(approvals)
+
+    assert " ".join(listing.split()) in block
+    assert all(listing in approval.prompt for approval in approvals)
+
+
+def test_bulk_approval_record_is_bounded_and_reports_omitted_rows() -> None:
+    targets = [f"org/repo-{index:04d}" for index in range(1000)]
+    listing = "\n".join(["rank  repo", *(f"{index + 1}  {target}" for index, target in enumerate(targets))])
+    stdout = io.StringIO()
+
+    approvals = collect_bulk_approval(
+        targets,
+        listing,
+        stdin=Tty("s\n"),
+        stdout=stdout,
+        now=lambda: AT,
+    )
+
+    prompt = approvals[0].prompt
+    assert targets[-1] in stdout.getvalue()
+    assert targets[-1] not in prompt
+    assert "980 rows omitted" in prompt
+    assert f"sha256={hashlib.sha256(listing.encode()).hexdigest()}" in prompt
 
 
 def test_quitting_a_bulk_prompt_approves_nothing() -> None:
