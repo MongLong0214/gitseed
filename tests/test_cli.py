@@ -24,6 +24,7 @@ from gitseed.pipeline.run import FetchedFiles
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.scoring import ScoreInputs
+from gitseed.storage import SQLiteRunStore
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -88,6 +89,105 @@ def test_run_over_fixtures_prints_a_ranked_table(capsys) -> None:
     assert "withheld" in captured.out
     assert "insufficient-evidence" in captured.out
     assert "candidate coverage: 3/3 search results (complete)" in captured.out
+
+
+def test_run_persists_exactly_one_artifact(tmp_path) -> None:
+    store_path = tmp_path / "runs.db"
+
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--store",
+            str(store_path),
+            "--run-id",
+            "first",
+        ]
+    ) == 0
+
+    with SQLiteRunStore(store_path) as store:
+        history = store.history()
+    assert [entry.run_id for entry in history] == ["first"]
+
+
+def test_history_orders_runs_and_shows_correction_lineage(tmp_path, capsys) -> None:
+    store_path = tmp_path / "runs.db"
+    for run_id, corrects in (("first", None), ("second", None), ("third", "first")):
+        arguments = [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(FIXTURES),
+            "--store",
+            str(store_path),
+            "--run-id",
+            run_id,
+        ]
+        if corrects is not None:
+            arguments.extend(("--corrects", corrects))
+        assert main(arguments) == 0
+        capsys.readouterr()
+
+    assert main(["run", "--history", "--store", str(store_path)]) == 0
+    history_output = capsys.readouterr().out
+
+    assert history_output.index("first") < history_output.index("second") < history_output.index("third")
+    assert "third: complete; query 'example'; decided" in history_output
+    assert "corrects first" in history_output
+    with SQLiteRunStore(store_path) as store:
+        assert store.history()[2].corrects_run_id == "first"
+
+
+def test_duplicate_run_id_cannot_mutate_a_stored_artifact(tmp_path, capsys) -> None:
+    store_path = tmp_path / "runs.db"
+    arguments = [
+        "run",
+        "--query",
+        "example",
+        "--fixtures",
+        str(FIXTURES),
+        "--store",
+        str(store_path),
+        "--run-id",
+        "first",
+    ]
+    assert main(arguments) == 0
+    capsys.readouterr()
+    with SQLiteRunStore(store_path) as store:
+        original = store.load("first").to_bytes()
+
+    assert main(arguments) == 1
+    assert "UNIQUE constraint failed" in capsys.readouterr().err
+    with SQLiteRunStore(store_path) as store:
+        assert store.load("first").to_bytes() == original
+
+
+def test_partial_run_is_saved_only_as_an_incomplete_artifact(tmp_path) -> None:
+    store_path = tmp_path / "runs.db"
+    _write_fixture(tmp_path, complete=False)
+
+    assert main(
+        [
+            "run",
+            "--query",
+            "example",
+            "--fixtures",
+            str(tmp_path),
+            "--store",
+            str(store_path),
+            "--run-id",
+            "failed",
+        ],
+    ) == 2
+
+    with SQLiteRunStore(store_path) as store:
+        history = store.history()
+    assert len(history) == 1
+    assert history[0].artifact.result.complete is False
 
 
 def test_search_timeout_is_printed_and_preserved_in_the_artifact(tmp_path, capsys) -> None:

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
 from .application import replay as replay_artifact
 from .artifact import RunArtifact
 from .storage_schema import migrate
+
+
+@dataclass(frozen=True)
+class StoredRun:
+    run_id: str
+    corrects_run_id: str | None
+    artifact: RunArtifact
 
 
 class SQLiteRunStore:
@@ -49,6 +57,14 @@ class SQLiteRunStore:
         if row is None:
             raise KeyError(run_id)
         return RunArtifact.from_bytes(bytes(row[0]))
+
+    def history(self) -> tuple[StoredRun, ...]:
+        return tuple(
+            StoredRun(str(run_id), corrects_run_id, RunArtifact.from_bytes(bytes(artifact)))
+            for run_id, corrects_run_id, artifact in self._connection.execute(
+                "SELECT run_id, corrects_run_id, artifact FROM run_artifacts ORDER BY rowid"
+            )
+        )
 
     def replay(self, run_id: str) -> RunArtifact:
         return replay_artifact(self.load(run_id).to_bytes())
