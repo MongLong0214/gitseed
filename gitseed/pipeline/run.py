@@ -109,6 +109,15 @@ class PipelineResult:
 #: comes back enthusiastic is an argument to override a security signal.
 BLOCKING_SEVERITY = "high"
 
+#: The grading model sees bounded, representative evidence. Deterministic
+#: screening deliberately continues to use its separate, larger source budget.
+MODEL_DIGEST_BYTE_CAP = 23_000
+MODEL_DIGEST_FILE_CAP = 16
+
+
+class ModelInputTooLarge(ValueError):
+    """The required model-evidence structure cannot fit without hiding it."""
+
 
 @dataclass(frozen=True)
 class FetchedFiles:
@@ -302,16 +311,117 @@ def run(
 
 
 def _digest(candidate: Candidate, files: Sequence[tuple[str, str]]) -> str:
-    """What the grader sees. Paths and contents, nothing about popularity.
+    """What the grader sees: bounded, declared evidence without popularity.
 
     Stars and push dates are deliberately withheld: a grader told a repository
     has 40k stars is being told the answer, and the whole point of grading is a
     judgement that does not already know it.
     """
+    original_sizes = tuple(_utf8_size(text) for _, text in files)
+    full = _render_digest(
+        candidate,
+        files,
+        tuple(range(len(files))),
+        original_sizes,
+        describe_files=False,
+    )
+    if _utf8_size(full) <= MODEL_DIGEST_BYTE_CAP:
+        return full
+
+    sampled_indices = _evenly_spaced_indices(len(files))
+    sampled_sizes = tuple(original_sizes[index] for index in sampled_indices)
+    empty = _render_digest(
+        candidate,
+        files,
+        sampled_indices,
+        (0,) * len(sampled_indices),
+        describe_files=True,
+    )
+    empty_size = _utf8_size(empty)
+    if empty_size > MODEL_DIGEST_BYTE_CAP:
+        raise ModelInputTooLarge(
+            f"model grading input structure exceeds {MODEL_DIGEST_BYTE_CAP} UTF-8 bytes"
+        )
+
+    content_budget = MODEL_DIGEST_BYTE_CAP - empty_size
+    while True:
+        requested_sizes = _divide_content_budget(content_budget, sampled_sizes)
+        included_sizes = tuple(
+            _utf8_size(_utf8_prefix(files[file_index][1], requested_size))
+            for file_index, requested_size in zip(sampled_indices, requested_sizes)
+        )
+        digest = _render_digest(
+            candidate,
+            files,
+            sampled_indices,
+            included_sizes,
+            describe_files=True,
+        )
+        excess = _utf8_size(digest) - MODEL_DIGEST_BYTE_CAP
+        if excess <= 0:
+            return digest
+        content_budget = max(0, content_budget - excess)
+
+
+def _evenly_spaced_indices(file_count: int) -> tuple[int, ...]:
+    if file_count <= MODEL_DIGEST_FILE_CAP:
+        return tuple(range(file_count))
+    return tuple(
+        index * (file_count - 1) // (MODEL_DIGEST_FILE_CAP - 1)
+        for index in range(MODEL_DIGEST_FILE_CAP)
+    )
+
+
+def _divide_content_budget(content_budget: int, original_sizes: Sequence[int]) -> tuple[int, ...]:
+    if not original_sizes:
+        return ()
+    per_file, remainder = divmod(content_budget, len(original_sizes))
+    return tuple(
+        min(size, per_file + (1 if index < remainder else 0))
+        for index, size in enumerate(original_sizes)
+    )
+
+
+def _render_digest(
+    candidate: Candidate,
+    files: Sequence[tuple[str, str]],
+    sampled_indices: Sequence[int],
+    included_sizes: Sequence[int],
+    *,
+    describe_files: bool,
+) -> str:
+    original_sizes = tuple(_utf8_size(text) for _, text in files)
+    included_total = sum(included_sizes)
     parts = [f"repository: {candidate.repo}"]
-    for path, text in files:
-        parts.append(f"--- {path}\n{text}")
+    if len(sampled_indices) != len(included_sizes):
+        raise ValueError("model digest sampled-file accounting is inconsistent")
+    for file_index, included_size in zip(sampled_indices, included_sizes):
+        path, text = files[file_index]
+        original_size = original_sizes[file_index]
+        marker = ""
+        if describe_files:
+            shortened = "true" if included_size < original_size else "false"
+            marker = (
+                f" [content_bytes original={original_size} included={included_size} "
+                f"shortened={shortened}]"
+            )
+        parts.append(f"--- {path}{marker}\n{_utf8_prefix(text, included_size)}")
+    selected_bytes = sum(original_sizes)
+    parts.append(
+        "model-evidence: "
+        f"selected_files={len(files)} sampled_files={len(sampled_indices)} "
+        f"selected_bytes={selected_bytes} included_bytes={included_total} "
+        f"omitted_bytes={selected_bytes - included_total}"
+    )
     return "\n".join(parts)
+
+
+def _utf8_prefix(text: str, maximum_bytes: int) -> str:
+    return text.encode("utf-8")[:maximum_bytes].decode("utf-8", errors="ignore")
+
+
+def _utf8_size(text: str) -> int:
+    return len(text.encode("utf-8"))
 
 
 def ranked(result: PipelineResult) -> list[Reviewed]:

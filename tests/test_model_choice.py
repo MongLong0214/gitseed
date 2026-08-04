@@ -6,6 +6,8 @@ import pytest
 
 from gitseed.cli import OllamaGrader, resolve_model, _resolve_ollama_host
 
+MODEL_PROMPT_BYTE_CAP = 24_000
+
 
 class TagsTransport:
     def __init__(self, models: list[str], expected_base: str = "http://localhost:11434") -> None:
@@ -120,6 +122,71 @@ def test_selected_model_is_recorded_in_the_grade() -> None:
     grade = OllamaGrader(model, transport, environ={}).evaluate("repository: example/tool\n")
     # Then: the recorded grade carries the selected model name.
     assert grade.model == "qwen2.5-coder:32b"
+
+
+def test_ollama_generation_bounds_output_and_records_bounded_prompt_version() -> None:
+    # Given: one transport serving both candidate-grade and maliciousness contracts.
+    class CapturingTransport:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def request(self, method, url, data=None, extra_headers=None):
+            request = json.loads(data)
+            self.calls.append(request)
+            response = {"malicious": False} if "boolean malicious" in request["prompt"] else {
+                "idea": 8,
+                "skill": 7,
+                "description": "useful",
+            }
+            return 200, {}, json.dumps({"response": json.dumps(response)}).encode()
+
+    transport = CapturingTransport()
+    grader = OllamaGrader("qwen2.5-coder:32b", transport, environ={})
+
+    # When: both local-model generation paths run.
+    grade = grader.evaluate("repository: example/tool\n")
+    assert grader.flags_malicious("repository: example/tool\n") is False
+
+    # Then: both have the same bounded deterministic generation contract.
+    assert grade.prompt_version == "cli-v2-bounded"
+    assert len(transport.calls) == 2
+    for request in transport.calls:
+        assert request["format"] == "json"
+        assert request["stream"] is False
+        assert request["options"] == {"temperature": 0, "num_predict": 128}
+        assert len(request["prompt"].encode("utf-8")) <= MODEL_PROMPT_BYTE_CAP
+
+
+def test_ollama_rejects_an_oversized_complete_prompt_without_http() -> None:
+    # Given: digest bytes which become oversized after the required grading instruction.
+    class NoHttpTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, method, url, data=None, extra_headers=None):
+            self.calls += 1
+            return 200, {}, json.dumps({"response": json.dumps({"idea": 8, "skill": 7, "description": "useful"})}).encode()
+
+    transport = NoHttpTransport()
+    grader = OllamaGrader("qwen2.5-coder:32b", transport, environ={})
+
+    # When/Then: structure is not silently trimmed and no request leaves the process.
+    with pytest.raises(ValueError, match=r"model grading prompt exceeds 24000 UTF-8 bytes"):
+        grader.evaluate("x" * MODEL_PROMPT_BYTE_CAP)
+    assert transport.calls == 0
+
+
+def test_output_cut_at_the_generation_limit_is_not_a_grade() -> None:
+    # Given: Ollama stopped mid-object at its bounded generation limit.
+    grader = OllamaGrader(
+        "qwen2.5-coder:32b",
+        GenerateTransport('{"idea": 8, "skill": 7, "description":'),
+        environ={},
+    )
+
+    # When/Then: no numeric fallback turns malformed output into a grade.
+    with pytest.raises(ValueError, match="not valid JSON"):
+        grader.evaluate("repository: example/tool\n")
 
 
 def test_ollama_host_env_variable_with_host_and_port() -> None:

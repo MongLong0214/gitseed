@@ -2,7 +2,7 @@
 
 Newest first.
 
-## 0.3.0 — 2026-07-29
+## 0.3.0 — 2026-08-04
 
 ### Upgrade reasons
 
@@ -61,9 +61,13 @@ Newest first.
 - `OLLAMA_HOST` was ignored; gitseed always talked to `localhost:11434` for both model
   discovery and grading. It is now read for both endpoints, accepting a bare `host:port` or a
   full `http(s)://` URL, and still defaults to `localhost:11434` when unset. (#71)
-- The grading step's timeout error did not mention how to raise the timeout. It now follows
-  its own error message with the `--grade-timeout` flag and its current value; the 120-second
-  default is unchanged. (#72)
+- Local-model grading reused the deterministic scanner's much larger source budget, sent an
+  unbounded prompt to Ollama, and left generated tokens uncapped. Large repositories could
+  therefore exhaust a 32B model's context or time out without stating what evidence the model
+  actually saw. Grading now uses a deterministic digest capped at 23KB and sampled across at
+  most 16 files, rejects complete prompts over 24KB before transport, caps output at 128
+  tokens, records prompt version `cli-v2-bounded`, and defaults to 240 seconds per model
+  response. The deterministic security scan still receives the original selected files.
 - `pip install` failed on setuptools ≥61 because `assets/` was discovered as a second
   top-level package, and there was no console-script entry point, so `python -m gitseed` was
   the only way to invoke the tool. Both are fixed: `[tool.setuptools.packages.find]` now

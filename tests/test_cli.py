@@ -1167,10 +1167,45 @@ def test_grade_timeout_defaults_to_a_32b_compatible_budget_and_accepts_an_overri
     parser = cli._parser()
     # When: they use the default or pass a specific timeout.
     default = parser.parse_args(["run", "--query", "example"])
-    override = parser.parse_args(["run", "--query", "example", "--grade-timeout", "240"])
+    override = parser.parse_args(["run", "--query", "example", "--grade-timeout", "241"])
     # Then: the default is practical and the CLI preserves an explicit value.
-    assert default.grade_timeout == 120
-    assert override.grade_timeout == 240
+    assert default.grade_timeout == 240
+    assert override.grade_timeout == 241
+
+
+def test_grade_timeout_help_and_readme_describe_bounded_per_response_grading(capsys) -> None:
+    # Given: operators use the CLI help and README to configure local grading.
+    assert main(["radar", "--help"]) == 0
+    help_text = capsys.readouterr().out
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    # Then: both describe the measured default and the bounded-evidence boundary.
+    assert "seconds per bounded model response (default: 240)" in help_text
+    assert "bounded evidence" in readme
+    assert "240 seconds" in readme
+    assert "per model response" in readme
+
+
+def test_truncated_ollama_json_makes_the_candidate_incomplete() -> None:
+    # Given: a bounded Ollama generation stopped before completing its JSON contract.
+    class TruncatedTransport:
+        def request(self, method, url, data=None, extra_headers=None):
+            return 200, {}, json.dumps({"response": '{"idea": 8, "skill": 7, "description":'}).encode()
+
+    grader = cli.OllamaGrader("qwen2.5-coder:32b", TruncatedTransport(), environ={})
+
+    # When: the pipeline records that one candidate's model result.
+    result = cli.run(
+        CollectResult(candidates=[Candidate("org/truncated", "org", "", 0, "")]),
+        fetch_files=lambda _: FetchedFiles((("main.py", "x = 1\n"),)),
+        grader=grader,
+    )
+
+    # Then: the invalid bounded output stays visible rather than becoming a numeric fallback.
+    assert result.complete is False
+    entry = result.reviewed[0]
+    assert entry.grade is None
+    assert "not valid JSON" in " ".join(result.incomplete_because)
 
 
 def test_grade_timeout_is_passed_to_the_ollama_transport(monkeypatch) -> None:

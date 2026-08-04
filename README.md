@@ -41,7 +41,9 @@ python3 -m gitseed run --query x --fixtures tests/fixtures
 
 The replay prints the ranked clean fixture and withholds the malicious fixture after deterministic screening. For a live run, model selection uses `OLLAMA_MODEL` when set; otherwise it chooses the first installed preferred model in this order: `qwen2.5-coder:32b`, `qwen2.5-coder:7b`, `qwen2.5-coder:1.5b`.
 
-For live grading, use `--grade-timeout` (in seconds, default 120) to control how long to wait for the model to respond to each file digest. Smaller models or slower machines may need a higher timeout; if grading times out, the tool will print a fix message with the current value and how to increase it.
+For live grading, GitSeed sends **bounded evidence** to the local model: a deterministic digest of at most 23,000 UTF-8 bytes inside a complete prompt capped at 24,000 bytes. The digest declares sampled, included, and omitted source bytes, so a model grade is a judgment over representative evidence rather than a full-repository review. Deterministic screening still receives the complete selected source set.
+
+`--grade-timeout` defaults to 240 seconds and applies per model response. A positive explicit value remains authoritative. A timeout is a visible incomplete candidate failure; increasing a timeout does not make an oversized unbounded prompt safe because GitSeed rejects such prompts before sending them.
 
 ## CLI
 
