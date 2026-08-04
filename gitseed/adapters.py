@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import quote, urlencode
 
+from .collect.ratelimit import classify
 from .collect.search import Candidate, CollectResult, Transport, collect
+from .evidence import ClaimBasis
 from .pipeline.run import FetchedFiles
 from .ports import RepositoryMetadata
 from .scoring import ScoreInputs
@@ -22,8 +25,7 @@ class GitHubRepository:
             pages=(limit + 99) // 100,
             per_page=min(limit, 100),
         )
-        result.candidates = result.candidates[:limit]
-        return result
+        return replace(result, candidates=result.candidates[:limit])
 
     def metadata(
         self,
@@ -33,42 +35,90 @@ class GitHubRepository:
         repo = quote(candidate.repo, safe="/")
         reasons: list[str] = []
 
-        commits_status, _, commits_body = self.transport.get(
+        commit_count = self._count_metadata(
             f"https://api.github.com/repos/{repo}/commits?"
-            + urlencode({"since": (at - timedelta(days=30)).isoformat(), "per_page": 4})
+            + urlencode({"since": (at - timedelta(days=30)).isoformat(), "per_page": 100}),
+            candidate.repo,
+            "commit",
+            reasons,
         )
-        if commits_status == 200:
-            commit_cadence = len(json.loads(commits_body)) >= 4
-        else:
-            commit_cadence = None
-            reasons.append(f"{candidate.repo}: commit metadata returned HTTP {commits_status}")
 
-        contributors_status, _, contributors_body = self.transport.get(
-            f"https://api.github.com/repos/{repo}/contributors?per_page=2&anon=1"
+        contributor_count = self._count_metadata(
+            f"https://api.github.com/repos/{repo}/contributors?per_page=100&anon=1",
+            candidate.repo,
+            "contributor",
+            reasons,
         )
-        if contributors_status == 200:
-            contributor_count = len(json.loads(contributors_body)) >= 2
-        else:
-            contributor_count = None
-            reasons.append(
-                f"{candidate.repo}: contributor metadata returned HTTP {contributors_status}"
-            )
 
-        license_status, _, _ = self.transport.get(
+        license_status, license_headers, license_body = self.transport.get(
             f"https://api.github.com/repos/{repo}/license"
         )
-        if license_status == 200:
-            has_license = True
+        license_kind = classify(license_status, license_headers)
+        if license_kind == "ok" and license_status == 200:
+            license = json.loads(license_body).get("license")
+            license_basis = ClaimBasis.DETERMINISTIC
         elif license_status == 404:
-            has_license = False
+            license = None
+            license_basis = ClaimBasis.DETERMINISTIC
         else:
-            has_license = None
-            reasons.append(f"{candidate.repo}: license metadata returned HTTP {license_status}")
+            license = None
+            license_basis = ClaimBasis.ABSENT
+            reasons.append(_metadata_failure(candidate.repo, "license", license_status, license_kind))
 
         return RepositoryMetadata(
-            ScoreInputs(commit_cadence, contributor_count, has_license),
+            ScoreInputs.observed(
+                commit_count,
+                contributor_count,
+                license,
+                commit_count_basis=(
+                    ClaimBasis.DETERMINISTIC
+                    if commit_count is not None
+                    else ClaimBasis.ABSENT
+                ),
+                contributor_count_basis=(
+                    ClaimBasis.DETERMINISTIC
+                    if contributor_count is not None
+                    else ClaimBasis.ABSENT
+                ),
+                license_basis=license_basis,
+            ),
             tuple(reasons),
         )
+
+    def _count_metadata(
+        self,
+        url: str,
+        repo: str,
+        request: str,
+        reasons: list[str],
+    ) -> int | None:
+        total = 0
+        while url:
+            status, headers, body = self.transport.get(url)
+            kind = classify(status, headers)
+            if kind != "ok" or status != 200:
+                reasons.append(_metadata_failure(repo, request, status, kind))
+                return None
+            total += len(json.loads(body))
+            url = _next_page(headers)
+        return total
+
+
+def _metadata_failure(repo: str, request: str, status: int, kind: str) -> str:
+    if kind == "rate-limited":
+        return f"{repo}: {request} metadata rate limited"
+    if kind == "forbidden":
+        return f"{repo}: {request} metadata forbidden"
+    return f"{repo}: {request} metadata returned HTTP {status}"
+
+
+def _next_page(headers: dict[str, str]) -> str | None:
+    link = next((value for name, value in headers.items() if name.lower() == "link"), "")
+    for item in link.split(","):
+        url, *parameters = item.split(";")
+        if any(parameter.strip() == 'rel="next"' for parameter in parameters):
+            return url.strip().removeprefix("<").removesuffix(">")
+    return None
 
 
 class CallableFileReader:

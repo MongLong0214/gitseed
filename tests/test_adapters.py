@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
 
 from gitseed.adapters import GitHubRepository
+from gitseed.collect.search import Candidate
+from gitseed.evidence import ClaimBasis
 from gitseed.scoring import ScoreInputs
 
 
@@ -33,6 +36,41 @@ class Transport:
         return 200, {}, b'{"license":{"spdx_id":"MIT"}}'
 
 
+class MetadataTransport(Transport):
+    def __init__(
+        self,
+        *,
+        commits: tuple[int, dict[str, str], bytes] = (200, {}, b"[{}, {}, {}, {}]"),
+        contributors: tuple[int, dict[str, str], bytes] = (200, {}, b"[{}, {}]"),
+        license: tuple[int, dict[str, str], bytes] = (200, {}, b'{"license":{"spdx_id":"MIT"}}'),
+    ) -> None:
+        super().__init__()
+        self.commits = commits
+        self.contributors = contributors
+        self.license = license
+
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        self.urls.append(url)
+        if "/commits?" in url:
+            return self.commits
+        if "/contributors?" in url:
+            return self.contributors
+        return self.license
+
+
+class PagedMetadataTransport(MetadataTransport):
+    def get(self, url: str) -> tuple[int, dict[str, str], bytes]:
+        self.urls.append(url)
+        page = int(parse_qs(urlparse(url).query).get("page", ["1"])[0])
+        if "/commits?" in url:
+            headers = {"Link": '<https://api.github.com/repos/org/repo/commits?page=2>; rel="next"'} if page == 1 else {}
+            return 200, headers, json.dumps([{}] * (100 if page == 1 else 37)).encode()
+        if "/contributors?" in url:
+            headers = {"Link": '<https://api.github.com/repos/org/repo/contributors?page=2>; rel="next"'} if page == 1 else {}
+            return 200, headers, json.dumps([{}] * (100 if page == 1 else 9)).encode()
+        return 200, {}, b'{"license":{"spdx_id":"MIT","name":"MIT License"}}'
+
+
 def test_github_repository_supplies_search_and_score_metadata() -> None:
     # Given: GitHub has one repository with every measured scoring signal.
     transport = Transport()
@@ -47,6 +85,113 @@ def test_github_repository_supplies_search_and_score_metadata() -> None:
 
     # Then: the domain receives its existing types, not HTTP payloads.
     assert collected.complete
-    assert metadata.score_inputs == ScoreInputs(True, True, True)
+    assert (
+        metadata.score_inputs.commit_cadence_30d,
+        metadata.score_inputs.contributor_count,
+        metadata.score_inputs.has_license,
+    ) == (True, True, True)
     assert metadata.incomplete_because == ()
     assert any("since=2026-06-27" in url for url in transport.urls)
+
+
+def test_metadata_403_with_an_exhausted_quota_is_rate_limited() -> None:
+    # Given: only the commit request reaches an exhausted GitHub quota.
+    transport = MetadataTransport(
+        commits=(403, {"X-RateLimit-Remaining": "0"}, b""),
+    )
+
+    # When: metadata reads every scoring input in its established order.
+    metadata = GitHubRepository(transport).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+
+    # Then: the endpoint and rate-limit remedy survive without skipping requests.
+    assert (
+        metadata.score_inputs.commit_cadence_30d,
+        metadata.score_inputs.contributor_count,
+        metadata.score_inputs.has_license,
+    ) == (None, True, True)
+    assert metadata.incomplete_because == ("org/repo: commit metadata rate limited",)
+    assert ["commits" in url or "contributors" in url or "license" in url for url in transport.urls] == [True, True, True]
+
+
+def test_metadata_403_with_budget_remaining_is_forbidden() -> None:
+    # Given: GitHub rejects the contributor request while quota remains.
+    transport = MetadataTransport(
+        contributors=(403, {"X-RateLimit-Remaining": "27"}, b""),
+    )
+
+    # When: metadata records the failed input.
+    metadata = GitHubRepository(transport).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+
+    # Then: permissions remain distinct from rate limiting.
+    assert (
+        metadata.score_inputs.commit_cadence_30d,
+        metadata.score_inputs.contributor_count,
+        metadata.score_inputs.has_license,
+    ) == (True, None, True)
+    assert metadata.incomplete_because == ("org/repo: contributor metadata forbidden",)
+
+
+def test_metadata_429_is_rate_limited_and_a_missing_license_is_absent() -> None:
+    # Given: contributors are throttled and this valid repository has no license.
+    transport = MetadataTransport(
+        contributors=(429, {}, b""),
+        license=(404, {}, b""),
+    )
+
+    # When: metadata processes all three responses.
+    metadata = GitHubRepository(transport).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+
+    # Then: 429 names its endpoint and 404 remains a scored absence.
+    assert (
+        metadata.score_inputs.commit_cadence_30d,
+        metadata.score_inputs.contributor_count,
+        metadata.score_inputs.has_license,
+    ) == (True, None, False)
+    assert metadata.incomplete_because == ("org/repo: contributor metadata rate limited",)
+
+
+def test_metadata_retains_exact_counts_and_the_license_response() -> None:
+    metadata = GitHubRepository(PagedMetadataTransport()).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    )
+
+    inputs = metadata.score_inputs
+    assert inputs.commit_count_30d == 137
+    assert inputs.contributor_total == 109
+    assert inputs.license == {"spdx_id": "MIT", "name": "MIT License"}
+    assert inputs.commit_count_basis is ClaimBasis.DETERMINISTIC
+    assert inputs.contributor_count_basis is ClaimBasis.DETERMINISTIC
+    assert inputs.license_basis is ClaimBasis.DETERMINISTIC
+    assert inputs.commit_cadence_30d is True
+    assert inputs.contributor_count is True
+    assert inputs.has_license is True
+
+
+def test_failed_contributor_metadata_is_not_a_zero_count() -> None:
+    zero = GitHubRepository(MetadataTransport(contributors=(200, {}, b"[]"))).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    ).score_inputs
+    failed = GitHubRepository(
+        MetadataTransport(contributors=(403, {"X-RateLimit-Remaining": "0"}, b""))
+    ).metadata(
+        Candidate("org/repo", "org", "", 0, ""),
+        datetime(2026, 7, 27, tzinfo=timezone.utc),
+    ).score_inputs
+
+    assert zero.contributor_total == 0
+    assert zero.contributor_count_basis is ClaimBasis.DETERMINISTIC
+    assert zero.contributor_count is False
+    assert failed.contributor_total is None
+    assert failed.contributor_count_basis is ClaimBasis.ABSENT
+    assert failed.contributor_count is None

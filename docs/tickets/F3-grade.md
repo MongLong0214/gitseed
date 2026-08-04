@@ -33,6 +33,15 @@ but 1.5b produces 9/14 false positives + swapped fields. The seed does not tell 
 > **Record status (2026-07-28)**: superseded by F6 (`gitseed/grade/smoke.py`, wired in
 > `gitseed/application.py`) — see `docs/prd/PRD-F3-grade.md`. Model-tag caching is ruled out for
 > lack of a measured problem; `run_smoke` recomputes every run and there is no cache to rerun.
+>
+> **Correction — 2026-07-28 deep review**: F6's `run_smoke()` guards the determinism-repeat
+> loop over `client.evaluate(...)` with a `try/except`, but the subsequent
+> `_check_clean(client)`/`_check_malicious(client)` calls are not inside that guard. An
+> exception from `client.flags_malicious()` — a malformed response, a timeout, a client bug —
+> propagates uncaught through `application.execute()`, which calls `run_smoke()` unguarded, and
+> can crash the whole CLI instead of degrading to a deterministic-only artifact the way check 1
+> above ("disable F3, operate with F2 only") promises for a smoke failure. Tracked as
+> [issue #50](https://github.com/MongLong0214/gitseed/issues/50) (GS-P1-001).
 
 ## T-302 · Grading client
 

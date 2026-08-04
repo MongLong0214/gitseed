@@ -54,3 +54,31 @@ At least 1 `high` signal → `high`. Only `low` signals → `low`. None → `non
 **AC**
 - [ ] Test each of the three paths
 - [ ] An empty list is `none` (not an exception)
+
+## Correction — 2026-07-28 deep review
+
+T-201's own AC are satisfied: every implemented `Signal` kind is tested against the fixtures
+named above, at the `scan_text()` level. What this ticket does not cover, and what a deep
+review of `dev` at `d0e1ecd` found missing, is whether a real GitHub file selection ever hands
+this module the files its rules are written for:
+
+- **The live file selector excludes `package.json` and every other manifest, lockfile, and
+  workflow file** — `SOURCE_EXTENSIONS` in `gitseed/cli.py` has no `.json` entry, so the
+  `postinstall` rule above is implemented, unit-tested against a fixture directory, and never
+  reached in a live run. Tracked as
+  [issue #45](https://github.com/MongLong0214/gitseed/issues/45) (GS-P0-001). No E2E test
+  exists that starts from `GitHubClient.fetch_files()` rather than a fixture directory read —
+  that gap is exactly why this was not caught by `tests/`.
+- **Files excluded by the 20-file/500KB caps do not affect `severity_of()`'s output or
+  `recommendation`.** `severity_of()` describes only the files that were scanned; nothing
+  distinguishes "scanned everything eligible, found nothing" from "scanned 20 of 200 eligible
+  files, found nothing in those 20." Tracked as
+  [issue #48](https://github.com/MongLong0214/gitseed/issues/48) (GS-P0-008).
+- **Selection order is raw git-tree order**, not prioritized by filename risk — a repository
+  can be structured with 20+ innocuous files sorted ahead of a malicious one, pushing it past
+  the count cap with no signal that this happened. Tracked as
+  [issue #49](https://github.com/MongLong0214/gitseed/issues/49) (GS-P1-018).
+
+None of this is a defect in `signals.py` or `verdict.py` themselves — `scan_text()` and
+`severity_of()` do exactly what T-201/T-202 specify, on the input they are given. The gap is
+upstream of this module, in what live input selection ever gives it to scan.

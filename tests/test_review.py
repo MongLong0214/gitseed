@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import inspect
 from datetime import datetime, timezone
@@ -13,7 +14,9 @@ from datetime import datetime, timezone
 import pytest
 
 from gitseed.review.actions import (
+    ActionOutcome,
     ApprovalMismatch,
+    OutcomeStatus,
     Performed,
     follow,
     perform,
@@ -27,7 +30,7 @@ from gitseed.review.approval import (
     collect_approval,
     collect_bulk_approval,
 )
-from gitseed.review.trailers import approval_trailers, render_block
+from gitseed.review.trailers import approval_trailers, render_block, render_outcome
 
 AT = datetime(2026, 7, 27, 9, 0, tzinfo=timezone.utc)
 
@@ -267,6 +270,60 @@ def test_a_block_carries_every_decision_including_the_rejections() -> None:
     assert "Ruled-out: b | 포크만 있다" in block
 
 
+def test_a_block_records_the_prompt_answer_and_approval_time() -> None:
+    approval = Approval(
+        target="octocat/hello",
+        decision=Decision.STAR,
+        prompt="display-snapshot-token\n[s]tar > ",
+        answer="s",
+        at=AT,
+    )
+
+    block = render_block([approval])
+
+    assert "prompt=display-snapshot-token [s]tar >" in block
+    assert "answer=s" in block
+    assert f"at={AT.isoformat()}" in block
+
+
+def test_a_star_only_session_records_its_action_as_easy_to_reverse() -> None:
+    approval = approved("octocat/hello", Decision.STAR)
+
+    assert "Undo:" not in render_block([approval])
+    assert "Undo: easy" in render_outcome(ActionOutcome(approval, OutcomeStatus.SUCCEEDED))
+
+
+def test_a_follow_only_session_records_its_irreversible_notification_cost() -> None:
+    approval = approved("octocat", Decision.FOLLOW)
+    outcome = render_outcome(ActionOutcome(approval, OutcomeStatus.SUCCEEDED))
+
+    assert "Undo:" not in render_block([approval])
+    assert "Undo: costly" in outcome
+    assert "Limit: a follow notification may already have been delivered and cannot be recalled" in outcome
+
+
+def test_a_mixed_session_keeps_reversibility_per_action() -> None:
+    star_approval = approved("octocat/hello", Decision.STAR)
+    follow_approval = approved("octocat", Decision.FOLLOW)
+    outcomes = [
+        render_outcome(ActionOutcome(star_approval, OutcomeStatus.SUCCEEDED)),
+        render_outcome(ActionOutcome(follow_approval, OutcomeStatus.SUCCEEDED)),
+    ]
+
+    assert "Undo:" not in render_block([star_approval, follow_approval])
+    assert ["Undo: easy" in outcome for outcome in outcomes] == [True, False]
+    assert ["Undo: costly" in outcome for outcome in outcomes] == [False, True]
+
+
+def test_a_compensated_failure_is_not_recorded_as_a_clean_undo() -> None:
+    outcome = render_outcome(
+        ActionOutcome(approved("octocat/hello", Decision.STAR), OutcomeStatus.COMPENSATED)
+    )
+
+    assert "Undo: permanent" in outcome
+    assert "Limit: compensation cannot recall external effects already emitted" in outcome
+
+
 # --- AC-6: --approve-all -------------------------------------------------------
 
 
@@ -297,6 +354,42 @@ def test_bulk_approvals_are_marked_as_bulk_in_what_the_person_saw() -> None:
     """건별로 본 것과 일괄로 본 것을 트레일러만 보고 구분할 수 있어야 한다."""
     approvals = collect_bulk_approval(["a", "b"], "목록", stdin=Tty("s\n"), stdout=io.StringIO(), now=lambda: AT)
     assert all("일괄 승인: 2건" in a.prompt for a in approvals)
+
+
+def test_bulk_approval_record_preserves_the_displayed_listing() -> None:
+    listing = "rank  repo   score\n1     org/a  9\n2     org/b  7\n3     org/c  4"
+    approvals = collect_bulk_approval(
+        ["org/a", "org/b", "org/c"],
+        listing,
+        stdin=Tty("s\n"),
+        stdout=io.StringIO(),
+        now=lambda: AT,
+    )
+
+    block = render_block(approvals)
+
+    assert " ".join(listing.split()) in block
+    assert all(listing in approval.prompt for approval in approvals)
+
+
+def test_bulk_approval_record_is_bounded_and_reports_omitted_rows() -> None:
+    targets = [f"org/repo-{index:04d}" for index in range(1000)]
+    listing = "\n".join(["rank  repo", *(f"{index + 1}  {target}" for index, target in enumerate(targets))])
+    stdout = io.StringIO()
+
+    approvals = collect_bulk_approval(
+        targets,
+        listing,
+        stdin=Tty("s\n"),
+        stdout=stdout,
+        now=lambda: AT,
+    )
+
+    prompt = approvals[0].prompt
+    assert targets[-1] in stdout.getvalue()
+    assert targets[-1] not in prompt
+    assert "980 rows omitted" in prompt
+    assert f"sha256={hashlib.sha256(listing.encode()).hexdigest()}" in prompt
 
 
 def test_quitting_a_bulk_prompt_approves_nothing() -> None:

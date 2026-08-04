@@ -74,7 +74,6 @@ class TestRateLimitParsing:
         limit = parse({"X-RateLimit-Reset": "100"})
         assert limit.seconds_until_reset(now=1_000_000) >= 1.0
 
-
 class TestForbiddenVersusExhausted:
     """GitHub says 403 for both. Confusing them means either waiting an hour for
     a permissions error or hammering an API that asked us to stop."""
@@ -103,10 +102,69 @@ class TestForbiddenVersusExhausted:
 
 
 class TestTruncationIsReported:
+    def test_search_timeout_is_recorded_alongside_its_reported_total(self) -> None:
+        # Given: GitHub returns candidates from a search it says timed out.
+        body = json.dumps(
+            {
+                "incomplete_results": True,
+                "total_count": 4,
+                "items": [
+                    {
+                        "full_name": "a/one",
+                        "html_url": "https://github.com/a/one",
+                        "stargazers_count": 7,
+                        "pushed_at": "2026-07-01T00:00:00Z",
+                    }
+                ],
+            }
+        ).encode()
+
+        # When: collection accepts the returned candidates.
+        result = collect("q", transport=FakeTransport([(200, OK, body)]))
+
+        # Then: the partial search and its count survive beside the candidate.
+        assert result.search_incomplete is True
+        assert result.total_count == 4
+        assert result.complete_for_search is False
+        assert result.search is not None
+        assert (result.search.sort, result.search.order) == ("updated", "desc")
+
+    def test_reported_total_larger_than_retrieved_is_partial(self) -> None:
+        # Given: GitHub completes the response but its count exceeds the candidates returned.
+        body = json.dumps(
+            {
+                "incomplete_results": False,
+                "total_count": 2,
+                "items": [
+                    {
+                        "full_name": "a/one",
+                        "html_url": "https://github.com/a/one",
+                        "stargazers_count": 7,
+                        "pushed_at": "2026-07-01T00:00:00Z",
+                    }
+                ],
+            }
+        ).encode()
+
+        # When: the requested page has been collected.
+        result = collect("q", transport=FakeTransport([(200, OK, body)]))
+
+        # Then: a complete transport response is not mistaken for a complete candidate set.
+        assert result.complete is True
+        assert result.total_count == 2
+        assert result.complete_for_search is False
+
     def test_a_rate_limit_marks_the_result_incomplete(self) -> None:
         result = collect("q", transport=FakeTransport([(403, EXHAUSTED, b"{}")]))
         assert not result.complete
         assert "rate limited" in (result.stopped_because or "")
+
+    def test_distant_reset_records_server_distance_and_cap(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "14400"}
+        result = collect("q", transport=FakeTransport([(403, headers, b"{}")]), now=lambda: 0)
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 14400s; retry wait capped at 3600s"
+        )
 
     def test_partial_results_are_kept_and_flagged(self) -> None:
         transport = FakeTransport(
@@ -176,12 +234,99 @@ class TestWaiting:
     def test_still_limited_after_waiting_gives_up_rather_than_looping(self) -> None:
         transport = FakeTransport([(403, EXHAUSTED, b"{}")])
         slept: list[float] = []
-        result = collect("q", transport=transport, wait=True, sleep=slept.append)
+        result = collect(
+            "q",
+            transport=transport,
+            wait=True,
+            sleep=slept.append,
+            now=lambda: 1_999_999_940,
+        )
         assert not result.complete
         assert len(slept) == 1
 
+    def test_retry_after_seconds_is_waited_before_retrying(self) -> None:
+        transport = FakeTransport(
+            [(403, {"Retry-After": "45"}, b"{}"), (200, OK, page(["a/one"]))]
+        )
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 100)
+        assert result.complete
+        assert slept == [45.0]
+
+    def test_retry_after_http_date_is_waited_before_retrying(self) -> None:
+        transport = FakeTransport(
+            [
+                (
+                    403,
+                    {"Retry-After": "Thu, 01 Jan 1970 00:02:30 GMT"},
+                    b"{}",
+                ),
+                (200, OK, page(["a/one"])),
+            ]
+        )
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 100)
+        assert result.complete
+        assert slept == [50.0]
+
+    def test_a_rate_limit_without_headers_waits_for_the_fallback(self) -> None:
+        transport = FakeTransport([(429, {}, b"{}"), (200, OK, page(["a/one"]))])
+        slept: list[float] = []
+        result = collect("q", transport=transport, wait=True, sleep=slept.append)
+        assert result.complete
+        assert slept == [60.0]
+
+    def test_distant_reset_sleeps_to_cap_and_reports_it(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "14400"}
+        transport = FakeTransport([(403, headers, b"{}")])
+        slept: list[float] = []
+        with pytest.warns(RuntimeWarning, match="capped at 3600s; server requested 14400s"):
+            result = collect("q", transport=transport, wait=True, sleep=slept.append, now=lambda: 0)
+        assert not result.complete
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 14400s; retry wait capped at 3600s; "
+            "still rate limited after waiting"
+        )
+        assert slept == [3600.0]
+
+    def test_normal_reset_is_reported_and_slept_without_a_cap(self) -> None:
+        headers = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "60"}
+        slept: list[float] = []
+        result = collect(
+            "q",
+            transport=FakeTransport([(403, headers, b"{}")]),
+            wait=True,
+            sleep=slept.append,
+            now=lambda: 0,
+        )
+        assert not result.complete
+        assert result.stopped_because == (
+            "rate limited after 0 page(s); resets in 60s; still rate limited after waiting"
+        )
+        assert "capped" not in (result.stopped_because or "")
+        assert slept == [60.0]
+
 
 class TestPaging:
+    def test_default_ordering_is_recorded_and_sent(self) -> None:
+        transport = FakeTransport([(200, OK, page([]))])
+
+        result = collect("language:python", transport=transport, pages=2, per_page=3)
+
+        assert result.search is not None
+        assert result.search.query == "language:python"
+        assert result.search.sort == "updated"
+        assert result.search.order == "desc"
+        assert result.search.pages == 2
+        assert result.search.per_page == 3
+        assert parse_qs(urlparse(transport.urls[0]).query) == {
+            "q": ["language:python"],
+            "sort": ["updated"],
+            "order": ["desc"],
+            "per_page": ["3"],
+            "page": ["1"],
+        }
+
     def test_a_search_query_is_percent_encoded_and_round_trips(self) -> None:
         # Given: GitHub syntax uses reserved characters alongside a separating space.
         transport = FakeTransport([(200, OK, page([]))])
@@ -190,7 +335,8 @@ class TestPaging:
         collect(query, transport=transport, per_page=3)
         # Then: the wire URL is valid and decodes to the original GitHub query.
         assert transport.urls == [
-            "https://api.github.com/search/repositories?q=language%3Apython+stars%3A%3E100%2Buseful&per_page=3&page=1"
+            "https://api.github.com/search/repositories?q=language%3Apython+stars%3A%3E100%2Buseful"
+            "&sort=updated&order=desc&per_page=3&page=1"
         ]
         assert parse_qs(urlparse(transport.urls[0]).query)["q"] == [query]
 

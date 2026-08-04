@@ -23,6 +23,20 @@ which model is used.**
 - [ ] Every signal has a `path#line` citation. A signal without a citation fails the test
 - [ ] 0 LLM calls — this module does not call a network or model
 
+## Correction — 2026-07-28 deep review
+
+This PRD's Goal states screening "extract[s] risk signals... before calling an LLM"; the
+signal rules themselves (requirement 2) are implemented and correctly tested at the module
+level. What is not true yet is that a live run's file selection reaches those rules for the
+file types requirement 2 names — `package.json` postinstall/preinstall detection in
+particular. See
+[`docs/tickets/F2-screen.md#correction-2026-07-28-deep-review`](../tickets/F2-screen.md) for
+the finding and [issue #45](https://github.com/MongLong0214/gitseed/issues/45) (GS-P0-001),
+[issue #48](https://github.com/MongLong0214/gitseed/issues/48) (GS-P0-008, partial coverage
+not reflected in severity), and
+[issue #49](https://github.com/MongLong0214/gitseed/issues/49) (GS-P1-018, adversarial
+selection order).
+
 ## Record status (2026-07-28)
 
 **The `known malicious package names in dependency manifests` signal (`dep`): ruled out, not

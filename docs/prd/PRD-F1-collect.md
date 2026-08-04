@@ -37,3 +37,14 @@ run artifact records which port failed and why. A dedicated exception type would
 to say what the result type already says — two descriptions of the same fact drift apart the
 first time one of them is updated and the other is not. See commit trailers for the formal
 `Ruled-out:` record.
+
+## Correction — 2026-07-28 deep review
+
+The "incompleteness explicitly" claim above holds for rate-limit truncation, and does not yet
+hold for GitHub Search's own `incomplete_results` flag, which this codebase reads nowhere.
+See [`docs/tickets/F1-collect.md#correction-2026-07-28-deep-review`](../tickets/F1-collect.md#correction-2026-07-28-deep-review)
+for the finding, [issue #47](https://github.com/MongLong0214/gitseed/issues/47) (GS-P0-007,
+incomplete search results not propagated) and
+[issue #51](https://github.com/MongLong0214/gitseed/issues/51) (GS-P1-002, `Retry-After` not
+used as an actual wait duration). This PRD's requirement 2 ("rate-limit handling") is where
+both belong; neither is fixed by this note, both are tracked.

@@ -13,8 +13,8 @@ the "nothing to commit" refusal when the index matches `HEAD` exactly — if the
 working tree gitseed was invoked from has anything else staged, a plain
 `commit --allow-empty` commits that too, silently folding unrelated changes
 into the decision record. `SubprocessGitCommitter` instead builds the commit
-from plumbing: `commit-tree` against `HEAD`'s existing tree (or git's
-well-known empty tree, for a repository with no commits yet), then
+from plumbing: `commit-tree` against `HEAD`'s existing tree (or an empty tree
+created in the repository's object format, when it has no commits yet), then
 `update-ref` to move the branch. Neither command touches the index, so
 whatever is staged stays staged and the working tree is not read at all — the
 record is that the review happened, nothing else.
@@ -31,11 +31,14 @@ overload, no default, and no path that skips deriving the message from
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
-from .approval import Approval, Decision
-from .trailers import render_block
+from .actions import ActionOutcome
+from .approval import BULK_LISTING_ROW_LIMIT, Approval, Decision
+from .trailers import render_block, render_outcome
 
 
 class CommitFailed(RuntimeError):
@@ -46,12 +49,6 @@ class GitCommitter(Protocol):
     """The seam a fake slots into. Tests never touch a real repository."""
 
     def commit(self, message: str) -> str: ...
-
-
-#: The SHA of the empty tree. Identical in every git repository — it is not
-#: computed, it is the hash of zero entries — so a brand-new repository with no
-#: commits yet can still be given a root commit whose tree changes nothing.
-_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 class SubprocessGitCommitter:
@@ -74,12 +71,15 @@ class SubprocessGitCommitter:
             parent = head.stdout.decode().strip()
             tree = self._require(self._git("rev-parse", f"{parent}^{{tree}}"), "could not resolve HEAD's tree")
             args = ["commit-tree", tree, "-p", parent]
+            expected_head = parent
         else:
             # No commits yet (or `repo` is not a repository at all — `commit-tree`
             # below reports that clearly rather than this guessing at the reason).
-            args = ["commit-tree", _EMPTY_TREE]
+            tree = self._require(self._git("mktree", input=b""), "git mktree failed")
+            args = ["commit-tree", tree]
+            expected_head = "0" * len(tree)
         sha = self._require(self._git(*args, input=message.encode()), "git commit-tree failed")
-        self._require(self._git("update-ref", "HEAD", sha), "git update-ref failed")
+        self._require(self._git("update-ref", "HEAD", sha, expected_head), "git update-ref failed")
         return sha
 
     def _git(self, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
@@ -116,13 +116,53 @@ def record_decisions(
     the list before rendering it — the commit is for whatever was actually
     decided, approved or not.
     """
-    block = render_block(list(approvals), reasons=dict(reasons) if reasons else None)
+    block = render_decisions(approvals, reasons=reasons)
     if not block:
         return None
     return committer.commit(f"{_summary(approvals)}\n\n{block}")
 
 
+def render_decisions(
+    approvals: Sequence[Approval],
+    *,
+    reasons: Mapping[str, str] | None = None,
+) -> str:
+    """Render the bounded trailer block used by both stdout and the commit."""
+    recorded = list(approvals)
+    if not reasons:
+        recorded = _collapse_large_bulk_groups(recorded)
+    return render_block(recorded, reasons=dict(reasons) if reasons else None)
+
+
+def _collapse_large_bulk_groups(approvals: list[Approval]) -> list[Approval]:
+    keys = [
+        (approval.prompt, approval.answer, approval.at, approval.decision)
+        for approval in approvals
+    ]
+    counts = Counter(keys)
+    emitted = set()
+    recorded: list[Approval] = []
+    for approval, key in zip(approvals, keys):
+        count = counts[key]
+        if not approval.bulk or count <= BULK_LISTING_ROW_LIMIT:
+            recorded.append(approval)
+        elif key not in emitted:
+            recorded.append(
+                replace(approval, target=f"<{count} bulk targets; listing recorded in prompt>")
+            )
+            emitted.add(key)
+    return recorded
+
+
+def record_outcome(outcome: ActionOutcome, committer: GitCommitter) -> str:
+    return committer.commit(
+        f"gitseed action outcome: {outcome.action} {outcome.status.value}\n\n"
+        f"{render_outcome(outcome)}"
+    )
+
+
 def _summary(approvals: Sequence[Approval]) -> str:
     approved = sum(1 for approval in approvals if approval.decision is not Decision.REJECT)
     rejected = len(approvals) - approved
-    return f"gitseed review: {approved} approved, {rejected} rejected"
+    pending = "; actions pending and may already have run" if approved else ""
+    return f"gitseed review intent: {approved} actions authorized, {rejected} rejected{pending}"

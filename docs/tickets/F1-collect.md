@@ -198,3 +198,30 @@ Regression tests added, closing the loop:
 a strengthened `tests/test_cli.py::test_github_names_forbidden_access_as_not_waitable` (now
 uses budget-left headers matching the live capture instead of empty ones, and asserts
 `severity`, `screening_basis`, and `score` alongside the withheld message).
+
+## <a id="correction-2026-07-28-deep-review"></a> Correction — 2026-07-28 deep review
+
+This ticket's opening line claims: "when a response is partial, [F1] does not hide that
+fact." That claim holds for rate-limit truncation (`CollectResult.complete`,
+`stopped_because`) but does not hold for a second, distinct kind of partial response GitHub's
+Search API itself reports: `incomplete_results`.
+
+**`incomplete_results` is read nowhere in this codebase.** `gitseed/collect/search.py`'s
+`_parse_items()` reads only the response's `items` array; `incomplete_results` and
+`total_count` are discarded. A GitHub Search response can set `incomplete_results: true` to
+say its own search timed out internally and did not fully execute — a different fact than "we
+hit our rate limit" or "the query genuinely had few matches," and today indistinguishable
+from either in `CollectResult`. Tracked as
+[issue #47](https://github.com/MongLong0214/gitseed/issues/47) (GS-P0-007).
+
+Separately, `TestWaiting`'s two documented cases (wait-and-retry-once) are correct for the
+primary rate limit, communicated via `X-RateLimit-Reset`, which `parse()` reads. They do not
+hold for GitHub's *secondary* rate limit, communicated via `Retry-After`: `classify()`
+recognizes `Retry-After` as evidence of rate-limiting, but `parse()` never reads its value, so
+`seconds_until_reset` computes `0` and `collect(wait=True)` retries immediately instead of
+waiting. Tracked as [issue #51](https://github.com/MongLong0214/gitseed/issues/51)
+(GS-P1-002).
+
+Neither of these is a regression of the AC this ticket already checked off — both are gaps the
+original AC list never named. This section records them as new, not as a failure of the
+existing `[x]` items above.

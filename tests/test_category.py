@@ -4,8 +4,18 @@ from dataclasses import replace
 
 import pytest
 
-from gitseed.category import CATEGORY_PACKS, CategoryPack, Evidence, EvidenceRequirement, classify
+from gitseed.category import (
+    CATEGORY_PACKS,
+    CategoryPack,
+    Evidence,
+    EvidenceRequirement,
+    FileEvidenceReader,
+    classify,
+    satisfiable_evidence,
+)
+from gitseed.collect.search import Candidate
 from gitseed.evidence import ClaimBasis
+from gitseed.pipeline.run import FetchedFiles
 
 
 def test_unreadable_evidence_is_absent_not_an_uncategorized_match() -> None:
@@ -26,7 +36,7 @@ def test_unreadable_evidence_is_absent_not_an_uncategorized_match() -> None:
     assert result.missing_evidence == ("files",)
     assert result.render() == (
         "category: absent\n"
-        "pack version: v1\n"
+        "pack: python v1\n"
         "unavailable evidence: files\n"
     )
 
@@ -66,12 +76,28 @@ def test_model_only_evidence_is_uncategorized_until_the_basis_changes() -> None:
 
 def test_pack_rejects_evidence_the_collector_cannot_produce() -> None:
     # Given/When: a pack asks the collector for a non-existent evidence source.
-    with pytest.raises(ValueError, match="webhooks"):
+    with pytest.raises(
+        ValueError,
+        match="category pack 'webhook-driven' names unavailable evidence: webhooks",
+    ):
         CategoryPack(
             name="webhook-driven",
             version="v1",
             evidence=(EvidenceRequirement("webhooks", "receiver"),),
         )
+
+
+def test_satisfiable_evidence_is_derived_from_reader_output() -> None:
+    reader = FileEvidenceReader()
+    produced = reader.read_evidence(
+        Candidate("org/repo", "org", "", 0, ""),
+        FetchedFiles(()),
+        None,
+    )
+
+    assert satisfiable_evidence(reader) == frozenset(item.evidence for item in produced) == frozenset(
+        producer.__name__.removeprefix("_") for producer in reader._producers
+    )
 
 
 def test_classifier_is_deterministic_for_the_same_evidence_and_pack_version() -> None:
@@ -117,3 +143,32 @@ def test_initial_category_packs_validate() -> None:
         "mcp",
         "local-ai",
     )
+
+
+def test_coding_agents_requires_an_independent_source_signal() -> None:
+    pack = CATEGORY_PACKS[0]
+    agents_only = (
+        Evidence("files", frozenset({"AGENTS.md"}), ClaimBasis.DETERMINISTIC),
+        Evidence("source", frozenset(), ClaimBasis.DETERMINISTIC),
+    )
+    strong = (
+        Evidence("files", frozenset({"AGENTS.md"}), ClaimBasis.DETERMINISTIC),
+        Evidence("source", frozenset({"agent-runtime"}), ClaimBasis.DETERMINISTIC),
+    )
+
+    weak = classify(pack, agents_only)
+    matched = classify(pack, strong)
+
+    assert weak.category is None
+    assert weak.basis is ClaimBasis.DETERMINISTIC
+    assert matched.category == "coding-agents"
+    assert matched.basis is ClaimBasis.DETERMINISTIC
+
+
+def test_same_version_packs_keep_distinct_identities() -> None:
+    evidence = (Evidence("files", frozenset({"README.md"}), ClaimBasis.DETERMINISTIC),)
+    mcp = classify(CategoryPack("mcp", "v1", (EvidenceRequirement("files", "README.md"),)), evidence)
+    local_ai = classify(CategoryPack("local-ai", "v1", (EvidenceRequirement("files", "README.md"),)), evidence)
+
+    assert mcp.pack != local_ai.pack
+    assert (mcp.pack.name, mcp.pack.version) == ("mcp", "v1")

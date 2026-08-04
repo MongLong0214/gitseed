@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from .category import DEFAULT_EVIDENCE_READER, Evidence
 from .collect.search import Candidate, CollectResult
 from .grade.types import GradeClient
 from .pipeline.run import FetchedFiles
@@ -14,6 +15,7 @@ from .scoring import ScoreInputs
 class RunRequest:
     query: str
     limit: int
+    categories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)  # noqa: SLOTS_OK -- dataclass slots require Python 3.10.
@@ -36,6 +38,17 @@ class FileReader(Protocol):
     def read(self, candidate: Candidate) -> FetchedFiles: ...
 
 
+class EvidenceReader(Protocol):
+    evidence_names: frozenset[str]
+
+    def read_evidence(
+        self,
+        candidate: Candidate,
+        files: FetchedFiles,
+        metadata: RepositoryMetadata | None,
+    ) -> tuple[Evidence, ...]: ...
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
@@ -46,3 +59,4 @@ class RunPorts:
     files: FileReader
     model: GradeClient
     clock: Clock
+    evidence: EvidenceReader = DEFAULT_EVIDENCE_READER

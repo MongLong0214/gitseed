@@ -13,6 +13,7 @@ without an `Approval` at all.
 
 from __future__ import annotations
 
+import io
 import inspect
 import subprocess
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from gitseed.review.approval import Approval, Decision
+from gitseed.review.approval import Approval, Decision, collect_bulk_approval
 from gitseed.review.commit import CommitFailed, SubprocessGitCommitter, record_decisions
 from gitseed.review.trailers import render_block
 
@@ -44,6 +45,33 @@ class RecordingCommitter:
 class FailingCommitter:
     def commit(self, message: str) -> str:
         raise CommitFailed("git refused")
+
+
+class Tty(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+class RacingCommitter(SubprocessGitCommitter):
+    def __init__(self, repo: Path) -> None:
+        super().__init__(repo)
+        self.competing_sha = ""
+
+    def _git(self, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+        result = super()._git(*args, input=input)
+        if args[0] == "commit-tree" and result.returncode == 0 and not self.competing_sha:
+            competing = subprocess.run(
+                ["git", "-C", str(self.repo), "commit-tree", *args[1:]],
+                input=b"competing commit\n",
+                check=True,
+                capture_output=True,
+            )
+            self.competing_sha = competing.stdout.decode().strip()
+            subprocess.run(
+                ["git", "-C", str(self.repo), "update-ref", "HEAD", self.competing_sha],
+                check=True,
+            )
+        return result
 
 
 # --- structural: no path around the approval contract --------------------------
@@ -115,6 +143,25 @@ def test_an_approval_session_commits_once_for_every_decision_together() -> None:
     assert message.count("Ruled-out:") == 1
 
 
+def test_a_large_bulk_listing_is_recorded_once_not_once_per_target() -> None:
+    targets = [f"org/repo-{index:04d}" for index in range(1000)]
+    listing = "\n".join(["rank  repo", *(f"{index + 1}  {target}" for index, target in enumerate(targets))])
+    approvals = collect_bulk_approval(
+        targets,
+        listing,
+        stdin=Tty("s\n"),
+        stdout=io.StringIO(),
+        now=lambda: AT,
+    )
+    committer = RecordingCommitter()
+
+    record_decisions(approvals, committer)
+
+    assert len(committer.messages) == 1
+    assert committer.messages[0].count("Verified:") == 1
+    assert "980 rows omitted" in committer.messages[0]
+
+
 def test_the_commit_failure_from_the_committer_propagates() -> None:
     with pytest.raises(CommitFailed):
         record_decisions([approved("a", Decision.STAR)], FailingCommitter())
@@ -149,6 +196,44 @@ def test_subprocess_committer_creates_an_empty_commit_carrying_the_message(tmp_p
     ).stdout
     assert logged.strip() == "", "an --allow-empty decision commit must change no tracked file"
     assert "Verified: octocat/hello" in _log(repo)
+
+
+def test_subprocess_committer_creates_a_root_commit_in_a_sha256_repository(tmp_path: Path) -> None:
+    repo = tmp_path / "sha256-repo"
+    repo.mkdir()
+    initialized = subprocess.run(
+        ["git", "init", "-q", "--object-format=sha256"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if initialized.returncode != 0:
+        pytest.skip("installed git does not support SHA-256 repositories")
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "gitseed tests"], cwd=repo, check=True)
+    expected_tree = subprocess.run(
+        ["git", "mktree"],
+        cwd=repo,
+        input="",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    sha = record_decisions(
+        [approved("octocat/hello", Decision.STAR)],
+        SubprocessGitCommitter(repo),
+    )
+
+    actual_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert sha is not None
+    assert actual_tree == expected_tree
 
 
 def test_subprocess_committer_makes_one_commit_per_call_not_per_approval(tmp_path: Path) -> None:
@@ -187,6 +272,32 @@ def test_subprocess_committer_fails_loudly_outside_a_git_repository(tmp_path: Pa
     committer = SubprocessGitCommitter(not_a_repo)
     with pytest.raises(CommitFailed):
         committer.commit("gitseed review: 1 approved, 0 rejected\n\nVerified: a\n")
+
+
+@pytest.mark.parametrize("existing_head", [False, True])
+def test_subprocess_committer_does_not_overwrite_a_concurrent_commit(
+    tmp_path: Path, existing_head: bool
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    if existing_head:
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "--allow-empty", "-m", "initial"],
+            check=True,
+            capture_output=True,
+        )
+    committer = RacingCommitter(repo)
+
+    with pytest.raises(CommitFailed):
+        committer.commit("gitseed review intent\n\nVerified: a\n")
+
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == committer.competing_sha
 
 
 @pytest.mark.skipif(not VALIDATOR.is_file(), reason="commitlore is unavailable at ~/projects/annals/dist/commitlore.mjs")

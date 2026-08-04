@@ -6,27 +6,41 @@ import argparse
 import base64
 import json
 import os
+import re
+import socket
+import sqlite3
+import subprocess
 import sys
 import traceback
-from dataclasses import replace
+from uuid import uuid4
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Final, IO, Mapping, Protocol, Sequence
 from urllib.parse import parse_qs, quote, urlparse
 
 from .adapters import CallableFileReader, GitHubRepository, SystemClock
-from .application import execute, replay
-from .artifact import RunArtifact
+from .application import engine_version_mismatches, execute, re_evaluate, render, replay
+from .artifact import ArtifactCollection, ArtifactReviewed, RunArtifact
+from .category import CATEGORY_PACKS, CategoryMatch
 from .collect.ratelimit import classify, parse
 from .collect.search import Candidate, CollectResult, Transport, UrllibTransport, collect
 from .grade.types import GradeResult
-from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, ranked, run
+from .pipeline.run import FetchedFiles, FileFetchError, Reviewed, run
 from .ports import RepositoryMetadata, RunPorts, RunRequest
-from .review.actions import GitHubWriter, perform
+from .review.actions import ActionOutcome, GitHubWriter, OutcomeStatus, Performed, perform, undo
 from .review.approval import Approval, Decision, NotInteractive, collect_approval, collect_bulk_approval
-from .review.commit import CommitFailed, GitCommitter, SubprocessGitCommitter, record_decisions
-from .review.trailers import render_block
-from .scoring import ScoreInputs, WEIGHTS
+from .review.commit import (
+    CommitFailed,
+    GitCommitter,
+    SubprocessGitCommitter,
+    record_decisions,
+    record_outcome,
+    render_decisions,
+)
+from .screen.coverage import SkippedFile, SourceCoverage
+from .scoring import Recommendation, RecommendationStatus, ScoreInputs, WEIGHTS
+from .storage import ObservationWriteError, SQLiteRunStore, StoredObservation
 
 
 PREFERRED_OLLAMA_MODELS: Final = (
@@ -34,10 +48,14 @@ PREFERRED_OLLAMA_MODELS: Final = (
     "qwen2.5-coder:7b",
     "qwen2.5-coder:1.5b",
 )
-OLLAMA_TAGS_URL: Final = "http://localhost:11434/api/tags"
-# A cold one-token reply from the local 32B model took about 23 seconds; a
-# multi-file digest needs several times that budget instead of the old 30-second default.
-DEFAULT_GRADE_TIMEOUT: Final = 120
+# A measured 24KB end-to-end grade on the supported 32B model completed well
+# inside this per-response deadline.
+DEFAULT_GRADE_TIMEOUT: Final = 240
+DEFAULT_STORE: Final = Path(".gitseed") / "runs.db"
+CLI_PROCESS_ID: Final = os.getpid()
+MODEL_OUTPUT_EXCERPT_CHARS: Final = 160
+MODEL_PROMPT_BYTE_CAP: Final = 24_000
+MODEL_OUTPUT_TOKEN_CAP: Final = 128
 EXIT_CODES: Final = "Exit codes: 0 complete; 1 invalid invocation or operational failure; 2 incomplete run."
 SCORE_LIMIT: Final = "Score measures small-versus-medium size; it does not predict that a repository will take off."
 SOURCE_FILE_BYTE_CAP: Final = 100_000
@@ -51,6 +69,39 @@ SOURCE_EXTENSIONS: Final = frozenset(
         ".swift", ".ts", ".tsx", ".vue", ".zsh",
     }
 )
+REVIEW_STATUS_ORDER: Final = {
+    RecommendationStatus.REVIEW: 0,
+    RecommendationStatus.INSUFFICIENT_EVIDENCE: 1,
+    RecommendationStatus.NOT_PRIORITY: 2,
+    RecommendationStatus.BLOCKED: 3,
+}
+# Manifests, lockfiles, and CI definitions: selected by exact filename
+# regardless of extension, because the extension allow-list above has no
+# `.json`/`.yaml`/`.lock`/extensionless entry and never will -- broadening it
+# would let arbitrary data files ride along with source, not just the handful
+# of build-time inputs a supply-chain attack actually targets. See
+# `_is_priority_path` for why these are also exempt from the file-count cap.
+PRIORITY_FILENAMES: Final = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements.txt",
+        "Cargo.toml",
+        "Cargo.lock",
+        "go.mod",
+        "go.sum",
+        "Dockerfile",
+        "Makefile",
+    }
+)
+# One level deep under .github/workflows/, matching the issue's own
+# `.github/workflows/*.yml`/`*.yaml` glob.
+_WORKFLOW_PATH: Final = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 
 
 class FetchFiles(Protocol):
@@ -65,13 +116,36 @@ class Grader(Protocol):
     def flags_malicious(self, digest: str) -> bool: ...
 
 
+class ModelPromptTooLarge(ValueError):
+    """The complete model prompt cannot be sent without exceeding its contract."""
+
+
+def _resolve_ollama_host(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve the Ollama host URL from OLLAMA_HOST environment variable or default.
+
+    Supports formats: "host:port", "http://host:port", "https://host:port".
+    Returns a URL base suitable for API calls (e.g., "http://host:port").
+    """
+    environment = os.environ if environ is None else environ
+    host = environment.get("OLLAMA_HOST", "localhost:11434")
+
+    # If it already starts with http:// or https://, use as-is
+    if host.startswith(("http://", "https://")):
+        return host.rstrip("/")
+
+    # Otherwise, assume it's "host:port" and prepend http://
+    return f"http://{host}"
+
+
 def resolve_model(transport: Transport, *, environ: Mapping[str, str] | None = None) -> tuple[str, str]:
     environment = os.environ if environ is None else environ
     explicit = environment.get("OLLAMA_MODEL")
     if explicit is not None:
         return explicit, "explicit OLLAMA_MODEL"
+    ollama_base = _resolve_ollama_host(environment)
+    tags_url = f"{ollama_base}/api/tags"
     try:
-        status, _, body = transport.get(OLLAMA_TAGS_URL)
+        status, _, body = transport.get(tags_url)
     except OSError as error:
         raise RuntimeError(
             "could not reach Ollama to find a grading model; looked for "
@@ -106,6 +180,8 @@ class FixtureTransport:
         self.items: list[dict[str, str | int]] = list(payload["candidates"])
         self.complete = bool(payload.get("complete", True))
         self.stopped_because = payload.get("stopped_because")
+        self.total_count = int(payload.get("total_count", len(self.items)))
+        self.incomplete_results = bool(payload.get("incomplete_results", False))
         self._files = {str(item["full_name"]): str(item.get("files", item["full_name"])) for item in self.items}
         self.calls: list[tuple[str, str]] = []
 
@@ -114,7 +190,13 @@ class FixtureTransport:
         page = int(query.get("page", ["1"])[0])
         per_page = int(query.get("per_page", ["30"])[0])
         start = (page - 1) * per_page
-        return 200, {"X-RateLimit-Remaining": "29"}, json.dumps({"items": self.items[start:start + per_page]}).encode()
+        return 200, {"X-RateLimit-Remaining": "29"}, json.dumps(
+            {
+                "items": self.items[start:start + per_page],
+                "total_count": self.total_count,
+                "incomplete_results": self.incomplete_results,
+            }
+        ).encode()
 
     def fetch_files(self, candidate: Candidate) -> FetchedFiles:
         root = self.directory / self._files[candidate.repo]
@@ -127,10 +209,12 @@ class FixtureTransport:
             pages=(limit + 99) // 100,
             per_page=min(limit, 100),
         )
-        result.complete = self.complete
-        result.stopped_because = self.stopped_because
-        result.candidates = result.candidates[:limit]
-        return result
+        return replace(
+            result,
+            candidates=result.candidates[:limit],
+            complete=self.complete,
+            stopped_because=self.stopped_because,
+        )
 
     def metadata(
         self,
@@ -175,6 +259,18 @@ class FixtureGrader:
         return "base64.b64decode" in digest
 
 
+def _is_priority_path(path: str) -> bool:
+    """A manifest, lockfile, or workflow file -- fetched regardless of extension.
+
+    These are exactly the files a supply-chain attack targets: install hooks,
+    pinned dependencies, CI trigger conditions. `SOURCE_EXTENSIONS` alone
+    cannot select them (GS-P0-001), and even once it can, they must not be
+    the files an attacker crowds out by padding earlier tree entries
+    (GS-P0-008) -- see the priority-first selection in `fetch_files` below.
+    """
+    return Path(path).name in PRIORITY_FILENAMES or bool(_WORKFLOW_PATH.match(path))
+
+
 class GitHubClient:
     """Read repository text and execute reviewed GitHub account actions."""
 
@@ -187,43 +283,83 @@ class GitHubClient:
         if error := _github_response_error(status, headers):
             raise error
         tree = json.loads(body).get("tree", [])
-        selected: list[tuple[str, str]] = []
-        skipped: list[str] = []
-        total_bytes = 0
+
+        discovered = 0
+        eligible = 0
+        priority_candidates: list[tuple[str, str, int]] = []
+        regular_candidates: list[tuple[str, str, int]] = []
+        skipped_policy: list[SkippedFile] = []
+
         # An allow-list fails closed for new binary formats; a deny-list would repeat
         # the injection-scanner mistake where the next unknown format slips through.
         for entry in tree:
             if entry.get("type") != "blob":
                 continue
+            discovered += 1
             path = str(entry["path"])
             size = int(entry.get("size", 0))
-            if path.endswith((".min.js", ".min.css")) or Path(path).suffix.lower() not in SOURCE_EXTENSIONS:
-                skipped.append(f"{path}: extension is not gradeable")
-            elif size > SOURCE_FILE_BYTE_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_FILE_BYTE_CAP}-byte cap")
-            elif len(selected) == SOURCE_FILE_COUNT_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_FILE_COUNT_CAP}-file count cap")
-            elif total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
-                skipped.append(f"{path}: exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap")
-            else:
-                selected.append((path, str(entry["url"])))
-                total_bytes += size
+            url = str(entry["url"])
+            priority = _is_priority_path(path)
+            if not priority and (path.endswith((".min.js", ".min.css")) or Path(path).suffix.lower() not in SOURCE_EXTENSIONS):
+                skipped_policy.append(SkippedFile(path, "extension is not gradeable"))
+                continue
+            eligible += 1
+            if size > SOURCE_FILE_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_FILE_BYTE_CAP}-byte cap"))
+                continue
+            (priority_candidates if priority else regular_candidates).append((path, url, size))
+
+        selected: list[tuple[str, str]] = []
+        total_bytes = 0
+        # Priority manifests/lockfiles/workflows are selected before the
+        # count budget is applied at all, not merely early within it -- an
+        # attacker who pads the first SOURCE_FILE_COUNT_CAP tree entries with
+        # clean files cannot push a manifest out of the scan by position,
+        # only by exceeding the byte budget every selected file still shares.
+        for path, url, size in priority_candidates:
+            if total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap"))
+                continue
+            selected.append((path, url))
+            total_bytes += size
+
+        regular_selected = 0
+        for path, url, size in regular_candidates:
+            if regular_selected == SOURCE_FILE_COUNT_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_FILE_COUNT_CAP}-file count cap"))
+                continue
+            if total_bytes + size > SOURCE_TOTAL_BYTE_CAP:
+                skipped_policy.append(SkippedFile(path, f"exceeds {SOURCE_TOTAL_BYTE_CAP}-byte total-byte cap"))
+                continue
+            selected.append((path, url))
+            total_bytes += size
+            regular_selected += 1
 
         files: list[tuple[str, str]] = []
+        skipped_error: list[SkippedFile] = []
         complete = True
         incomplete_because: str | None = None
         rate_limited = False
         for path, url in selected:
             blob_status, blob_headers, blob_body = self.transport.get(url)
             if error := _github_response_error(blob_status, blob_headers):
-                skipped.append(f"{path}: {error}")
+                skipped_error.append(SkippedFile(path, str(error)))
                 complete = False
                 incomplete_because = incomplete_because or error.run_reason
                 rate_limited = rate_limited or error.rate_limited
                 continue
             blob = json.loads(blob_body)
             files.append((path, base64.b64decode(blob["content"]).decode(errors="replace")))
-        return FetchedFiles(tuple(files), tuple(skipped), complete, incomplete_because, rate_limited)
+
+        coverage = SourceCoverage(
+            discovered_files=discovered,
+            eligible_files=eligible,
+            scanned_files=len(files),
+            skipped_policy=tuple(skipped_policy),
+            skipped_error=tuple(skipped_error),
+        )
+        skipped = tuple(f"{item.path}: {item.reason}" for item in (*skipped_policy, *skipped_error))
+        return FetchedFiles(tuple(files), skipped, complete, incomplete_because, rate_limited, coverage)
 
     def star(self, repo: str) -> None:
         self._write("PUT", f"https://api.github.com/user/starred/{quote(repo, safe='/')}")
@@ -289,37 +425,75 @@ def _wall_clock(instant: datetime) -> str:
 class OllamaGrader:
     """The smallest local-Ollama adapter satisfying the existing grade protocol."""
 
-    def __init__(self, model: str, transport: UrllibTransport | None = None) -> None:
+    def __init__(self, model: str, transport: UrllibTransport | None = None, *, environ: Mapping[str, str] | None = None) -> None:
         self.model = model
         self.transport = UrllibTransport() if transport is None else transport
+        self.ollama_base = _resolve_ollama_host(environ)
 
     def evaluate(self, digest: str) -> GradeResult:
-        result = self._ask(
+        output = self._ask(
             "Return JSON with integer idea and skill from 1 to 10 plus a concise description.\n\n"
             + digest
         )
+        try:
+            result = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise self._invalid_grade_response(output, "not valid JSON") from error
+        if not isinstance(result, dict):
+            raise self._invalid_grade_response(output, "not a JSON object")
+        for field in ("idea", "skill"):
+            if field not in result:
+                raise self._invalid_grade_response(output, f"missing {field}")
+            value = result[field]
+            if type(value) is not int:
+                raise self._invalid_grade_response(output, f"{field} is not an integer")
+            if not 1 <= value <= 10:
+                raise self._invalid_grade_response(output, f"{field} is outside 1..10")
+        description = result.get("description")
+        if not isinstance(description, str):
+            raise self._invalid_grade_response(output, "description is not a string")
         return GradeResult(
-            idea=int(result["idea"]),
-            skill=int(result["skill"]),
-            description=str(result["description"]),
+            idea=result["idea"],
+            skill=result["skill"],
+            description=description,
             model=self.model,
             temperature=0.0,
-            prompt_version="cli-v1",
+            prompt_version="cli-v2-bounded",
         )
 
     def flags_malicious(self, digest: str) -> bool:
-        return bool(self._ask("Return JSON with boolean malicious.\n\n" + digest).get("malicious", False))
+        result = json.loads(self._ask("Return JSON with boolean malicious.\n\n" + digest))
+        return bool(result.get("malicious", False)) if isinstance(result, dict) else False
 
-    def _ask(self, prompt: str) -> dict[str, object]:
+    def _invalid_grade_response(self, output: str, problem: str) -> ValueError:
+        excerpt = output[:MODEL_OUTPUT_EXCERPT_CHARS]
+        return ValueError(
+            f"grading model {self.model} did not return the requested JSON object with integer idea and skill from 1 to 10 "
+            f"plus a concise description: {problem}; it returned {excerpt!r} "
+            f"(output shown up to {MODEL_OUTPUT_EXCERPT_CHARS} characters). Choose another model."
+        )
+
+    def _ask(self, prompt: str) -> str:
+        if len(prompt.encode("utf-8")) > MODEL_PROMPT_BYTE_CAP:
+            raise ModelPromptTooLarge(
+                f"model grading prompt exceeds {MODEL_PROMPT_BYTE_CAP} UTF-8 bytes"
+            )
         body = json.dumps(
-            {"model": self.model, "prompt": prompt, "format": "json", "stream": False, "options": {"temperature": 0}}
+            {
+                "model": self.model,
+                "prompt": prompt,
+                "format": "json",
+                "stream": False,
+                "options": {"temperature": 0, "num_predict": MODEL_OUTPUT_TOKEN_CAP},
+            }
         ).encode()
+        generate_url = f"{self.ollama_base}/api/generate"
         status, _, response = self.transport.request(
-            "POST", "http://localhost:11434/api/generate", body, {"Content-Type": "application/json"}
+            "POST", generate_url, body, {"Content-Type": "application/json"}
         )
         if status != 200:
             raise RuntimeError(f"Ollama returned HTTP {status}")
-        return json.loads(json.loads(response)["response"])
+        return str(json.loads(response)["response"])
 
 
 class UnavailableGrader:
@@ -338,9 +512,16 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("radar", aliases=["run"], description=SCORE_LIMIT, epilog=EXIT_CODES)
     command.add_argument("--query", help="GitHub repository search query")
-    command.add_argument("--replay", type=Path, help="render a recorded artifact without live I/O")
+    command.add_argument("--category", action="append", choices=tuple(pack.name for pack in CATEGORY_PACKS), default=[])
+    command.add_argument("--list-categories", action="store_true", help="list built-in category packs and exit")
+    command.add_argument("--render", type=Path, help="render recorded output without re-evaluating it")
     command.add_argument("--limit", type=int, default=10, help="maximum candidates to carry forward")
-    command.add_argument("--grade-timeout", type=int, default=DEFAULT_GRADE_TIMEOUT, help="seconds to wait for one model response")
+    command.add_argument(
+        "--grade-timeout",
+        type=int,
+        default=DEFAULT_GRADE_TIMEOUT,
+        help="seconds per bounded model response (default: 240)",
+    )
     # A default write turns an accidental invocation into an external side effect.
     command.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     command.add_argument("--approve-all", action="store_true")
@@ -348,9 +529,26 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("--debug", action="store_true", help="print a traceback for transport failures")
     command.add_argument("--fixtures", type=Path, help="offline candidate, source, and grade replay directory")
     command.add_argument("--artifact", type=Path, help="write a replayable record of this run")
-    replay_command = commands.add_parser("replay", description="Compatibility alias for radar --replay.", epilog=EXIT_CODES)
+    command.add_argument("--store", type=Path, default=DEFAULT_STORE, help="SQLite run history (default: ./.gitseed/runs.db)")
+    command.add_argument("--run-id", help="identifier for this stored run")
+    command.add_argument("--history", action="store_true", help="show stored runs in append order")
+    command.add_argument("--corrects", help="run ID corrected by this new stored run")
+    command.add_argument(
+        "--source-mode",
+        choices=("metadata-only", "digest", "full-source"),
+        default="digest",
+        help="artifact source retention mode; digest is the safe default",
+    )
+    render_command = commands.add_parser("render", description="Render stored output unchanged.", epilog=EXIT_CODES)
+    render_command.add_argument("artifact", type=Path)
+    render_command.add_argument("--json", action="store_true")
+    replay_command = commands.add_parser("replay", description="Recompute stored port responses when recorded engines match.", epilog=EXIT_CODES)
     replay_command.add_argument("artifact", type=Path)
     replay_command.add_argument("--json", action="store_true")
+    replay_command.add_argument("--allow-engine-mismatch", action="store_true", help="recompute with current code after reporting changed engines")
+    reevaluate_command = commands.add_parser("re-evaluate", description="Recompute stored port responses with current code.", epilog=EXIT_CODES)
+    reevaluate_command.add_argument("artifact", type=Path)
+    reevaluate_command.add_argument("--json", action="store_true")
     explain_command = commands.add_parser("explain", description=SCORE_LIMIT, epilog=EXIT_CODES)
     explain_command.add_argument("repo")
     explain_command.add_argument("--artifact", type=Path, required=True)
@@ -373,7 +571,7 @@ def _table(entries: Sequence[Reviewed]) -> str:
 def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
     columns = ["rank", "repo", "score"]
     if rows and "weight_version" in rows[0]:
-        columns.extend(["weight_version", "coverage", "risk", "recommendation"])
+        columns.extend(["weight_version", "coverage", "risk", "recommendation", "category"])
     else:
         columns.append("severity")
     if any(row["withheld"] for row in rows):
@@ -385,35 +583,73 @@ def _table_rows(rows: Sequence[Mapping[str, str | int | None]]) -> str:
     return "\n".join(lines)
 
 
-def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
+@dataclass(frozen=True)
+class ReviewItem:
+    entry: ArtifactReviewed
+    recommendation: Recommendation
+    categories: tuple[CategoryMatch, ...]
+
+    @property
+    def repo(self) -> str:
+        return self.entry.candidate.repo
+
+
+def rank_review_items(artifact: RunArtifact) -> tuple[ReviewItem, ...]:
     recommendations = {scored.repo: scored.recommendation for scored in artifact.scores}
-    entries = sorted(
-        artifact.result.reviewed,
-        key=lambda entry: (
-            not recommendations[entry.candidate.repo].recommended,
-            -recommendations[entry.candidate.repo].score.value,
-            entry.candidate.repo,
-        ),
+    categories = {trace.candidate.repo: trace.categories for trace in artifact.repositories}
+    return tuple(
+        sorted(
+            (
+                ReviewItem(entry, recommendations[entry.candidate.repo], categories[entry.candidate.repo])
+                for entry in artifact.result.reviewed
+            ),
+            key=lambda item: (
+                REVIEW_STATUS_ORDER[item.recommendation.status],
+                -item.recommendation.score.value,
+                item.repo,
+            ),
+        )
     )
+
+
+def _review_item_records(items: Sequence[ReviewItem]) -> list[dict[str, str | int | None]]:
     return [
         {
             "rank": index,
-            "repo": entry.candidate.repo,
-            "score": str(recommendations[entry.candidate.repo].score.value),
-            "weight_version": recommendations[entry.candidate.repo].score.version,
-            "coverage": f"{len(recommendations[entry.candidate.repo].score.coverage)}/3",
-            "risk": recommendations[entry.candidate.repo].risk_verdict,
-            "recommendation": "review" if recommendations[entry.candidate.repo].recommended else "not recommended",
-            "severity": entry.severity,
-            "withheld": entry.withheld,
-            "model_coverage": artifact.result.grading_basis.value,
+            "repo": item.repo,
+            "score": str(item.recommendation.score.value),
+            "weight_version": item.recommendation.score.version,
+            "coverage": f"{len(item.recommendation.score.coverage)}/3",
+            "risk": item.recommendation.risk_verdict,
+            "recommendation": item.recommendation.status.value,
+            "category": _category_label(item.categories),
+            "severity": item.entry.severity,
+            "withheld": item.entry.withheld,
         }
-        for index, entry in enumerate(entries, start=1)
+        for index, item in enumerate(items, start=1)
     ]
 
 
-def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
-    records = _radar_records(artifact)
+def _category_label(categories: tuple[CategoryMatch, ...]) -> str:
+    if not categories:
+        return "not recorded"
+    return ", ".join(
+        match.category or f"{match.pack.name}: uncategorized ({match.basis.value})"
+        for match in categories
+    )
+
+
+def _radar_records(artifact: RunArtifact) -> list[dict[str, str | int | None]]:
+    return _review_item_records(rank_review_items(artifact))
+
+
+def _render_radar(
+    artifact: RunArtifact,
+    as_json: bool,
+    out: IO[str],
+    items: Sequence[ReviewItem] | None = None,
+) -> None:
+    records = _review_item_records(rank_review_items(artifact) if items is None else items)
     if as_json:
         json.dump(records, out)
         out.write("\n")
@@ -422,11 +658,107 @@ def _render_radar(artifact: RunArtifact, as_json: bool, out: IO[str]) -> None:
     coverage = artifact.result.grading_basis.value
     suffix = " (deterministic-only)" if coverage == "absent" else ""
     out.write(f"model coverage: {coverage}{suffix}\n")
+    out.write(_candidate_coverage(artifact.collection) + "\n")
     out.write(_table_rows(records) + "\n")
 
 
-def _replay(path: Path) -> RunArtifact:
-    return replay(path.read_bytes())
+def _candidate_coverage(collection: ArtifactCollection) -> str:
+    total = "unknown" if collection.total_count is None else str(collection.total_count)
+    if collection.complete_for_search:
+        state = "complete"
+    elif collection.incomplete_results:
+        state = "partial: GitHub reported a partial search"
+    else:
+        state = "partial"
+    return f"candidate coverage: {len(collection.candidates)}/{total} search results ({state})"
+
+
+def _render(path: Path) -> RunArtifact:
+    return render(path.read_bytes())
+
+
+def _observation_summary(first: StoredObservation, current: StoredObservation) -> str:
+    first_recorded = f"first recorded observation {first.observed_at.isoformat()}: {first.stars} stars"
+    if current == first:
+        return first_recorded + " (no growth yet)"
+    change = current.stars - first.stars
+    if change == 0:
+        return first_recorded + f"; now {current.stars} stars (unchanged since first recorded observation)"
+    return first_recorded + f"; now {current.stars} stars (changed {change:+d} stars since first recorded observation)"
+
+
+def _history(path: Path, out: IO[str], err: IO[str]) -> int:
+    if not path.exists():
+        out.write("No stored runs.\n")
+        return 0
+    try:
+        with SQLiteRunStore(path) as store:
+            runs = store.history()
+            observations = store.observations()
+    except (OSError, sqlite3.Error, ValueError) as error:
+        err.write(f"history failed: {error}\n")
+        return 1
+    if not runs:
+        out.write("No stored runs.\n")
+        return 0
+    first_by_repo: dict[str, StoredObservation] = {}
+    observations_by_run: dict[str, list[StoredObservation]] = {}
+    for observation in observations:
+        first_by_repo.setdefault(observation.repo, observation)
+        observations_by_run.setdefault(observation.run_id, []).append(observation)
+    for stored in runs:
+        decisions = ", ".join(
+            f"{item.repo}: {item.recommendation.status.value}"
+            for item in rank_review_items(stored.artifact)
+        ) or "no candidates"
+        correction = "" if stored.corrects_run_id is None else f"; corrects {stored.corrects_run_id}"
+        state = "complete" if stored.artifact.result.complete else "incomplete"
+        observed = ", ".join(
+            f"{observation.repo}: {_observation_summary(first_by_repo[observation.repo], observation)}"
+            for observation in observations_by_run.get(stored.run_id, [])
+        )
+        observation_suffix = "" if not observed else f"; observed {observed}"
+        out.write(
+            f"{stored.run_id}: {state}; query {stored.artifact.request.query!r}; "
+            f"decided {decisions}{correction}{observation_suffix}\n"
+        )
+    return 0
+
+
+def _save_stored_artifact(path: Path, run_id: str, corrects_run_id: str | None, data: bytes) -> str | None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with SQLiteRunStore(path) as store:
+            store.save(run_id, RunArtifact.from_bytes(data), corrects_run_id)
+    except ObservationWriteError as error:
+        return str(error)
+    return None
+
+
+def _store_run(path: Path, run_id: str, corrects_run_id: str | None, artifact: RunArtifact, err: IO[str]) -> None:
+    data = artifact.to_bytes()
+    if os.getpid() == CLI_PROCESS_ID:
+        observation_error = _save_stored_artifact(path, run_id, corrects_run_id, data)
+    else:
+        saved = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; from gitseed.cli import _save_stored_artifact; "
+                "print(_save_stored_artifact(Path(sys.argv[1]), sys.argv[2], sys.argv[3] or None, sys.stdin.buffer.read()) or '')",
+                str(path),
+                run_id,
+                corrects_run_id or "",
+            ],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if saved.returncode:
+            raise sqlite3.OperationalError(saved.stderr.decode().strip().splitlines()[-1])
+        observation_error = saved.stdout.decode().strip() or None
+    if observation_error is not None:
+        err.write(f"observation write failed: {observation_error}\n")
 
 
 def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> int:
@@ -441,10 +773,11 @@ def _status(artifact: RunArtifact, err: IO[str], source: str | None = None) -> i
 
 def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     trace = next((trace for trace in artifact.repositories if trace.candidate.repo == repo), None)
-    recommendation = next((scored.recommendation for scored in artifact.scores if scored.repo == repo), None)
-    reviewed = next((entry for entry in artifact.result.reviewed if entry.candidate.repo == repo), None)
-    if trace is None or recommendation is None or reviewed is None:
+    item = next((item for item in rank_review_items(artifact) if item.repo == repo), None)
+    if trace is None or item is None:
         return False
+    recommendation = item.recommendation
+    reviewed = item.entry
     score = recommendation.score
     values = None if trace.metadata is None else trace.metadata.score_inputs
     out.write(SCORE_LIMIT + "\n")
@@ -458,15 +791,25 @@ def _explain(artifact: RunArtifact, repo: str, out: IO[str]) -> bool:
     out.write(f"unavailable features: {unavailable or 'none'}\n")
     screened = ", ".join(reviewed.screened_files) or "0 files"
     out.write(f"security coverage: {reviewed.screening_basis.value} ({screened})\n")
-    coverage = artifact.result.grading_basis.value
-    suffix = " (deterministic-only)" if coverage == "absent" else ""
-    out.write(f"model coverage: {coverage}{suffix}\n")
+    # Only present for a live GitHub adapter read; fixtures and unread
+    # candidates do not model a policy budget to report against.
+    if reviewed.coverage is not None:
+        file_coverage = reviewed.coverage
+        completeness = "complete" if file_coverage.complete_for_policy else "incomplete"
+        out.write(
+            f"file coverage: {file_coverage.scanned_files}/{file_coverage.eligible_files} eligible files "
+            f"scanned, {file_coverage.discovered_files} discovered ({completeness}_for_policy)\n"
+        )
+    model_coverage = artifact.result.grading_basis.value
+    suffix = " (deterministic-only)" if model_coverage == "absent" else ""
+    out.write(f"model coverage: {model_coverage}{suffix}\n")
+    out.write(f"category: {_category_label(trace.categories)}\n")
     findings = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.findings)
     unverified = ", ".join(f"{signal.kind} at {signal.path}:{signal.line}" for signal in reviewed.unverified)
     out.write(f"security findings: {findings or 'none'}\n")
     out.write(f"unverified security claims: {unverified or 'none'}\n")
     out.write(f"risk: {recommendation.risk_verdict}\n")
-    out.write(f"recommendation: {'review' if recommendation.recommended else 'not recommended'}\n")
+    out.write(f"recommendation: {recommendation.status.value}\n")
     return True
 
 
@@ -478,16 +821,24 @@ def _action_approvals(approval: Approval, owner: str) -> list[Approval]:
     return [replace(approval, decision=Decision.STAR), replace(approval, target=owner, decision=Decision.FOLLOW)]
 
 
-def _approvals(entries: Sequence[Reviewed], approve_all: bool, stdin: IO[str], stdout: IO[str]) -> list[Approval]:
-    owners = {entry.candidate.repo: entry.candidate.owner for entry in entries}
+def _approvals(entries: Sequence[ReviewItem], approve_all: bool, stdin: IO[str], stdout: IO[str]) -> list[Approval]:
+    owners = {item.repo: item.entry.candidate.owner for item in entries}
     if approve_all:
-        collected = collect_bulk_approval(list(owners), _table(entries), stdin=stdin, stdout=stdout)
+        collected = collect_bulk_approval(
+            [item.repo for item in entries],
+            _table_rows(_review_item_records(entries)),
+            stdin=stdin,
+            stdout=stdout,
+        )
     else:
         collected = []
-        for entry in entries:
+        for item in entries:
             approval = collect_approval(
-                entry.candidate.repo,
-                f"{entry.candidate.repo}: score {entry.score if entry.score is not None else '-'}; severity {entry.severity}",
+                item.repo,
+                f"{item.repo}: deterministic score {item.recommendation.score.value}; "
+                f"model score {item.entry.score if item.entry.score is not None else '-'}; "
+                f"risk {item.recommendation.risk_verdict}; "
+                f"recommendation {item.recommendation.status.value}",
                 stdin=stdin,
                 stdout=stdout,
             )
@@ -515,17 +866,40 @@ def main(
         return 1 if error.code else 0
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
-    if args.command == "replay":
+    if args.command in ("radar", "run") and args.list_categories:
+        for pack in CATEGORY_PACKS:
+            requirements = ", ".join(f"{item.evidence}={item.value}" for item in pack.evidence)
+            out.write(f"{pack.name} {pack.version}: {requirements}\n")
+        return 0
+    if args.command in ("render", "replay", "re-evaluate"):
         try:
-            artifact = _replay(args.artifact)
+            data = args.artifact.read_bytes()
+            if args.command == "replay":
+                mismatches = engine_version_mismatches(render(data))
+                if mismatches and not args.allow_engine_mismatch:
+                    err.write(
+                        "replay not run: "
+                        + "; ".join(str(mismatch) for mismatch in mismatches)
+                        + ". Use --allow-engine-mismatch to recompute with current code.\n"
+                    )
+                    return 1
+                artifact = re_evaluate(data) if mismatches else replay(data)
+                source = (
+                    "recomputed stored responses; engine versions match current code"
+                    if not mismatches
+                    else "recomputed stored responses with changed engines: " + "; ".join(str(mismatch) for mismatch in mismatches)
+                )
+            else:
+                artifact = render(data) if args.command == "render" else re_evaluate(data)
+                source = f"{args.command} artifact"
         except (OSError, ValueError) as error:
-            err.write(f"replay failed: {error}\n")
+            err.write(f"{args.command} failed: {error}\n")
             return 1
         _render_radar(artifact, args.json, out)
-        return _status(artifact, err, "replayed artifact")
+        return _status(artifact, err, source)
     if args.command == "explain":
         try:
-            artifact = _replay(args.artifact)
+            artifact = _render(args.artifact)
         except (OSError, ValueError) as error:
             err.write(f"explain failed: {error}\n")
             return 1
@@ -535,7 +909,7 @@ def main(
         return _status(artifact, err, "replayed artifact")
     if args.command == "export":
         try:
-            artifact = _replay(args.artifact)
+            artifact = _render(args.artifact)
         except (OSError, ValueError) as error:
             err.write(f"export failed: {error}\n")
             return 1
@@ -543,19 +917,24 @@ def main(
         return _status(artifact, err, "replayed artifact")
     if args.command not in ("radar", "run"):
         return 1
-    if args.replay is not None:
+    if args.history:
+        if any((args.query, args.render, args.artifact, args.run_id, args.corrects)):
+            err.write("invalid invocation: --history cannot be combined with run options\n")
+            return 1
+        return _history(args.store, out, err)
+    if args.render is not None:
         if args.query is not None:
-            err.write("invalid invocation: --query cannot be used with --replay\n")
+            err.write("invalid invocation: --query cannot be used with --render\n")
             return 1
         try:
-            artifact = _replay(args.replay)
+            artifact = _render(args.render)
         except (OSError, ValueError) as error:
             err.write(f"radar failed: {error}\n")
             return 1
         _render_radar(artifact, args.json, out)
-        return _status(artifact, err, "replayed artifact")
+        return _status(artifact, err, "rendered artifact")
     if args.query is None:
-        err.write("invalid invocation: --query is required unless --replay is used\n")
+        err.write("invalid invocation: --query is required unless --render is used\n")
         return 1
     if args.limit < 1:
         err.write("invalid invocation: --limit must be positive\n")
@@ -582,51 +961,122 @@ def main(
                 active_grader = UnavailableGrader(str(error))
             else:
                 err.write(f"grading model: {model} ({reason})\n")
-                active_grader = OllamaGrader(model, ollama_transport)
+                active_grader = OllamaGrader(model, ollama_transport, environ=os.environ)
         repository = fixture if fixture is not None else GitHubRepository(active_transport)
         collected = repository.search(args.query, args.limit)
         recorded = execute(
-            RunRequest(args.query, args.limit),
+            RunRequest(args.query, args.limit, tuple(args.category)),
             RunPorts(
                 CollectedRepository(repository, collected),
                 CallableFileReader(active_fetch_files),
                 active_grader,
                 SystemClock(),
             ),
+            source_mode=args.source_mode,
         )
+        run_id = args.run_id or uuid4().hex
         if args.artifact is not None:
             args.artifact.write_bytes(recorded.to_bytes())
-        _render_radar(recorded, args.json, out)
+        review_items = rank_review_items(recorded)
+        _render_radar(recorded, args.json, out, review_items)
         status = _status(recorded, err)
         if status == 2:
             if recorded.result.rate_limited and not os.environ.get("GITHUB_TOKEN"):
                 err.write("GitHub allows 60 unauthenticated requests/hour; set GITHUB_TOKEN for 5,000.\n")
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 2
         if args.dry_run:
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 0
         active_writer = writer or (fixture if fixture is not None else client)
-        entries = ranked(recorded.result)
         try:
-            approvals = _approvals(entries, args.approve_all, source_in, out)
+            approvals = _approvals(review_items, args.approve_all, source_in, out)
         except NotInteractive as error:
             err.write(f"approval refused: {error}\n")
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 1
-        for approval in approvals:
-            perform(active_writer, approval)
-        block = render_block(approvals)
-        if block:
-            out.write(block)
         active_committer = committer or SubprocessGitCommitter(Path.cwd())
         try:
-            sha = record_decisions(approvals, active_committer)
+            intent_sha = record_decisions(approvals, active_committer)
         except CommitFailed as error:
-            err.write(f"decision commit failed: {error}\n")
+            err.write(f"intent commit failed: {error}\n")
+            _store_run(args.store, run_id, args.corrects, recorded, err)
             return 1
-        if sha is not None:
-            err.write(f"recorded decision commit {sha}\n")
-        return 0
-    except OSError as error:
-        err.write(f"run failed: {error}\n")
+        block = render_decisions(approvals)
+        if block:
+            out.write(block)
+        if intent_sha is not None:
+            err.write(f"recorded intent commit {intent_sha}\n")
+
+        performed: list[Performed] = []
+        failed_at: int | None = None
+        for index, approval in enumerate(approvals):
+            try:
+                completed = perform(active_writer, approval)
+            except (OSError, RuntimeError) as error:
+                err.write(f"action failed: {approval.decision.value} {approval.target}: {error}\n")
+                try:
+                    record_outcome(
+                        ActionOutcome(approval, OutcomeStatus.CALL_FAILED, str(error)),
+                        active_committer,
+                    )
+                except CommitFailed as commit_error:
+                    err.write(f"outcome commit failed; intent remains pending: {commit_error}\n")
+                failed_at = index
+                break
+            performed.extend(completed)
+            try:
+                for action in completed:
+                    record_outcome(
+                        ActionOutcome(action.approval, OutcomeStatus.SUCCEEDED),
+                        active_committer,
+                    )
+            except CommitFailed as error:
+                err.write(f"outcome commit failed; intent remains pending: {error}\n")
+                failed_at = index
+                break
+
+        if failed_at is None:
+            _store_run(args.store, run_id, args.corrects, recorded, err)
+            return 0
+
+        for approval in approvals[failed_at + 1:]:
+            if approval.decision is Decision.REJECT:
+                continue
+            try:
+                record_outcome(
+                    ActionOutcome(approval, OutcomeStatus.NOT_ATTEMPTED),
+                    active_committer,
+                )
+            except CommitFailed as error:
+                err.write(f"outcome commit failed; intent remains pending: {error}\n")
+
+        for action in reversed(performed):
+            try:
+                undo(active_writer, action)
+            except (OSError, RuntimeError) as error:
+                status = OutcomeStatus.COMPENSATION_FAILED
+                detail = str(error)
+                err.write(f"compensation failed: {action.action} {action.target}: {error}\n")
+            else:
+                status = OutcomeStatus.COMPENSATED
+                detail = ""
+            try:
+                record_outcome(
+                    ActionOutcome(action.approval, status, detail),
+                    active_committer,
+                )
+            except CommitFailed as error:
+                err.write(f"compensation outcome commit failed; intent remains pending: {error}\n")
+        _store_run(args.store, run_id, args.corrects, recorded, err)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        # Check if this is a timeout error and provide actionable guidance
+        if isinstance(error, socket.timeout) or "timed out" in str(error).lower():
+            err.write(f"run failed: {error}\n")
+            err.write("fix: verify the local model and available capacity; prompt and output limits are enforced\n")
+        else:
+            err.write(f"run failed: {error}\n")
         # Normal CLI output must stay actionable; debug mode preserves diagnostics.
         if args.debug:
             traceback.print_exc(file=err)

